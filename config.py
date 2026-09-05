@@ -47,7 +47,10 @@ TOLL_CACHE_TTL_DAYS = 30
 TOLL_REQUEST_TIMEOUT_S = 20.0
 TOLL_CONNECT_TIMEOUT_S = 5.0
 TOLL_REQUEST_INTERVAL_S = 1.5
-TOLL_GATE_MATCH_THRESHOLD_M = 250.0
+# OSM gate points and the OSRM geometry are normally coincident; 75 m leaves
+# room for extract/geometry differences without treating nearby ramps and
+# parallel carriageways several hundred metres away as the travelled gate.
+TOLL_GATE_MATCH_THRESHOLD_M = 75.0
 TOLL_GATE_DEDUP_THRESHOLD_M = 150.0
 TOLL_ROAD_MATCH_THRESHOLD_M = 100.0
 TOLL_MAX_PRICE_KRW = 10_000_000
