@@ -126,12 +126,37 @@ async function run() {
     await page.locator("#vehicle-class").selectOption("compact");
     await page.waitForFunction(() => window.KoreaTripToll.getState().result === null);
     assert(await page.locator("#toll-calculate").isEnabled(), "vehicle change invalidates toll and allows recalculation");
+    await page.locator("#toll-calculate").click();
+    await waitForTollResult(page);
+    const compactTollState = await page.evaluate(() => window.KoreaTripToll.getState());
+    assert(
+      compactTollState.result &&
+        compactTollState.result.vehicle_class === "compact" &&
+        compactTollState.result.route_id === routeBeforeToll.route_id,
+      "toll recalculates for the selected vehicle class on the same route"
+    );
 
     await chooseSearch(page, "destination", "Busan", "부산");
     await page.waitForFunction(
       () => window.KoreaTripRoute.getState().route === null && window.KoreaTripToll.getState().result === null
     );
     assert(true, "destination change invalidates route and toll together");
+    await page.locator("#route-calculate").click();
+    await waitForRoute(page);
+    const routeAfterDestinationChange = await page.evaluate(() => window.KoreaTripRoute.getState().route);
+    assert(
+      routeAfterDestinationChange &&
+        routeAfterDestinationChange.route_id !== routeBeforeToll.route_id,
+      "route recalculates after destination change"
+    );
+    await page.locator("#toll-calculate").click();
+    await waitForTollResult(page);
+    const finalTollState = await page.evaluate(() => window.KoreaTripToll.getState());
+    assert(
+      finalTollState.result &&
+        finalTollState.result.route_id === routeAfterDestinationChange.route_id,
+      "toll recalculates against the new route"
+    );
 
     const localHost = new URL(baseUrl).hostname;
     const allowedHosts = new Set([localHost, "tiles.openfreemap.org"]);
@@ -146,7 +171,7 @@ async function run() {
     assert(externalRequests.length === 0, "browser network has no unapproved external hosts");
     assert(forbiddenRequests.length === 0, "browser network has no forbidden routing/provider or telemetry hosts");
     assert(consoleErrors.length === 0 && pageErrors.length === 0, "Chromium has no console errors");
-    console.log(JSON.stringify({ status: "PASS", requestCount: requests.length, externalRequests, forbiddenRequests, consoleErrors, pageErrors, tollState }, null, 2));
+    console.log(JSON.stringify({ status: "PASS", requestCount: requests.length, externalRequests, forbiddenRequests, consoleErrors, pageErrors, tollState: finalTollState }, null, 2));
   } finally {
     await browser.close();
   }
