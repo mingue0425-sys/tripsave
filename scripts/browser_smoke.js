@@ -159,7 +159,15 @@ async function chooseFromSearch(page, slot, query, expectedName) {
     state: "visible",
   });
   await page.locator(`#${slot}-search-results .search-result`).first().click();
-  await page.waitForTimeout(600);
+  await page.waitForFunction(
+    () => {
+      const map = window.KoreaTripMap && window.KoreaTripMap.getMap();
+      return map && !map.isMoving();
+    },
+    null,
+    { timeout: 10000 }
+  );
+  await page.waitForTimeout(100);
   const state = await page.evaluate(() => window.KoreaTripSelection.getState());
   assert(
     state[slot] && state[slot].name === expectedName,

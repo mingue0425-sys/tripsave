@@ -60,3 +60,20 @@ def test_cache_can_return_expired_entry_as_stale(tmp_path) -> None:
     assert cache.get("서울", "부산") is None
     stale = cache.get("서울", "부산", allow_stale=True)
     assert stale is not None and not stale.fresh
+
+
+def test_cache_ignores_results_from_an_old_parser_version(tmp_path) -> None:
+    cache = TollRateCache(tmp_path / "tolls.db", ttl_days=30)
+    cache.put("서울", "부산", lookup())
+
+    import sqlite3
+
+    connection = sqlite3.connect(tmp_path / "tolls.db")
+    connection.execute(
+        "UPDATE toll_rates_cache SET parser_version = ?", ("old-parser",)
+    )
+    connection.commit()
+    connection.close()
+
+    assert cache.get("서울", "부산") is None
+    assert cache.get("서울", "부산", allow_stale=True) is None

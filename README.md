@@ -145,10 +145,18 @@ The fast Python tests cover the server regression endpoints, local search,
 canonical routing models, mocked OSRM failures, provider configuration,
 retired preview removal, fixed static-file safety, toll models, matching,
 parser, cache, and API behavior. The integration suite
-requires a running local OSRM and can be run with:
+requires a running local OSRM and can be run without the live official source
+with:
 
 ```bash
-python -m pytest -q -m integration
+python -m pytest -q -m "integration and not official"
+```
+
+The live official HTML adapter test is separately marked and requires network
+access to the fixed [한국도로공사 통행요금조회 페이지](https://www.ex.co.kr/portal/usefee/selectUseFeeNList.do):
+
+```bash
+python -m pytest -q -m official
 ```
 
 The Node tests cover localStorage save/restore, malformed payload handling,

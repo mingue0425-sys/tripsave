@@ -85,6 +85,11 @@ class TollRateCache:
             connection.close()
         if row is None:
             return None
+        if row[10] != PARSER_VERSION:
+            # A parser change can alter the meaning of a previously stored
+            # HTML result.  It is safer to recrawl than to present an older
+            # interpretation as current or stale evidence.
+            return None
         try:
             fetched_at = self._as_utc(row[8])
             expires_at = self._as_utc(row[9])

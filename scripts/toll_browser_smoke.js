@@ -56,6 +56,14 @@ async function chooseSearch(page, slot, query, expectedName) {
     timeout: 10_000,
   });
   await page.locator(`#${slot}-search-results .search-result`).first().click();
+  await page.waitForFunction(
+    () => {
+      const map = window.KoreaTripMap && window.KoreaTripMap.getMap();
+      return map && !map.isMoving();
+    },
+    null,
+    { timeout: 10_000 }
+  );
   const state = await page.evaluate(() => window.KoreaTripSelection.getState());
   assert(state[slot] && state[slot].name === expectedName, `${slot} search selects ${expectedName}`);
 }
