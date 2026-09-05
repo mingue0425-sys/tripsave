@@ -22,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from config import (
+    APP_VERSION,
     OSM_PBF_CHECKSUM_URL,
     OSM_PBF_URL,
     OSRM_BIND_HOST,
@@ -134,7 +135,7 @@ def select_engine(requested: str) -> tuple[str, dict[str, Path]]:
 
 
 def _http_text(url: str) -> str:
-    request = Request(url, headers={"User-Agent": "KoreaTripOptimizer/0.3 setup"})
+    request = Request(url, headers={"User-Agent": f"KoreaTripOptimizer/{APP_VERSION} setup"})
     try:
         with urlopen(request, timeout=30) as response:
             return response.read().decode("utf-8")
@@ -183,7 +184,7 @@ def download_pbf(force: bool = False) -> None:
     )
     if temporary_file.exists():
         temporary_file.unlink()
-    request = Request(OSM_PBF_URL, headers={"User-Agent": "KoreaTripOptimizer/0.3 setup"})
+    request = Request(OSM_PBF_URL, headers={"User-Agent": f"KoreaTripOptimizer/{APP_VERSION} setup"})
     print(f"Downloading {OSM_PBF_URL}")
     try:
         with urlopen(request, timeout=60) as response, temporary_file.open("wb") as target:

@@ -52,6 +52,13 @@ class TollRateCache:
         except (OSError, sqlite3.Error) as error:
             raise TollCacheError("The local toll cache database is unavailable.") from error
 
+    @staticmethod
+    def _as_utc(value: str) -> datetime:
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
     def get(
         self,
         entry_name: str,
@@ -64,7 +71,7 @@ class TollRateCache:
         try:
             row = connection.execute(
                 """
-                SELECT entry_name, exit_name, prices_json, distance_km,
+                SELECT source, entry_name, exit_name, prices_json, distance_km,
                        route_description, source_url, raw_evidence_hash,
                        fetched_at, expires_at, parser_version
                 FROM toll_rates_cache
@@ -79,23 +86,24 @@ class TollRateCache:
         if row is None:
             return None
         try:
-            fetched_at = datetime.fromisoformat(row[7])
-            expires_at = datetime.fromisoformat(row[8])
+            fetched_at = self._as_utc(row[8])
+            expires_at = self._as_utc(row[9])
             prices = {
                 key: int(value)
-                for key, value in json.loads(row[2]).items()
+                for key, value in json.loads(row[3]).items()
             }
             lookup = OfficialTollLookup(
-                entry_name=row[0],
-                exit_name=row[1],
-                route_label=row[0] + "~" + row[1],
+                source=row[0],
+                entry_name=row[1],
+                exit_name=row[2],
+                route_label=row[5] or (row[1] + "~" + row[2]),
                 route_stops=[],
-                distance_km=row[3],
+                distance_km=row[4],
                 prices=prices,
-                source_url=row[5],
+                source_url=row[6],
                 fetched_at=fetched_at,
-                raw_evidence_hash=row[6],
-                parser_version=row[9] or PARSER_VERSION,
+                raw_evidence_hash=row[7],
+                parser_version=row[10] or PARSER_VERSION,
             )
         except (TypeError, ValueError, KeyError, json.JSONDecodeError) as error:
             raise TollCacheError("The local toll cache contains malformed data.") from error

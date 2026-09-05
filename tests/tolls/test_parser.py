@@ -59,4 +59,6 @@ def test_price_parser_rejects_malformed_and_oversized_amounts() -> None:
     with pytest.raises(OfficialTollParserError):
         parse_price_krw("가격 미정")
     with pytest.raises(OfficialTollParserError):
+        parse_price_krw("-1,000원")
+    with pytest.raises(OfficialTollParserError):
         parse_price_krw("99,999,999원")

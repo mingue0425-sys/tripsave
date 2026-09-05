@@ -222,6 +222,20 @@ class TollCalculator:
             and requested_exit == normalize_toll_name(lookup.exit_name)
         )
 
+    @staticmethod
+    def _named_entry_exit(analysis) -> tuple[object, object] | None:
+        """Choose the first and last named candidates for the official form.
+
+        Unnamed booth/gantry features remain visible as OSM evidence, but they
+        cannot safely be submitted to the official toll-office lookup. If the
+        route has fewer than two named candidates, the result stays partial.
+        """
+
+        named = [match for match in analysis.gates if match.gate.name and match.gate.name.strip()]
+        if len(named) < 2:
+            return None
+        return named[0], named[-1]
+
     async def calculate(self, request: TollCalculationRequest) -> TollResponse:
         self._validate_route_binding(request)
         route_id = self._route_id(request)
@@ -234,22 +248,26 @@ class TollCalculator:
             raise TollIndexServiceUnavailableError(str(error)) from error
 
         if not analysis.toll_road_detected and not analysis.gates:
-            self.metrics["toll_free_result"] += 1
+            # Absence of a positive OSM toll tag is not proof that every
+            # travelled way is free: this index is intentionally sparse and
+            # OSRM's canonical route does not expose all way tags.  Never
+            # infer 0 KRW from an empty candidate set.
+            self.metrics["toll_free_unproven"] += 1
             result = TollResult(
-                status="ok",
-                complete=True,
+                status="partial",
+                complete=False,
                 vehicle_class=request.vehicle_class,
-                total_toll_krw=0,
-                known_toll_krw=0,
+                total_toll_krw=None,
+                known_toll_krw=None,
                 journeys=[],
                 detected_toll_gates=[],
-                unknown_segments=0,
-                reason="no_detected_toll_road",
-                source_status="not_applicable",
-                fetched_at=datetime.now(timezone.utc),
+                unknown_segments=1,
+                reason="toll_status_not_proven",
+                source_status="unavailable",
+                fetched_at=None,
                 route_id=route_id,
             )
-            return TollResponse(status="ok", toll=result)
+            return TollResponse(status="partial", toll=result)
 
         if analysis.unsupported_private_road:
             self.metrics["private_toll_road"] += 1
@@ -281,8 +299,20 @@ class TollCalculator:
             )
             return TollResponse(status="partial", toll=result)
 
-        entry_gate = analysis.gates[0].gate
-        exit_gate = analysis.gates[-1].gate
+        named_pair = self._named_entry_exit(analysis)
+        if named_pair is None:
+            self.metrics["gate_name_failure"] += 1
+            result = self._partial_result(
+                request=request,
+                route_id=route_id,
+                reason="toll_entry_exit_names_ambiguous",
+                detected_gates=analysis.gates,
+            )
+            return TollResponse(status="partial", toll=result)
+
+        entry_match, exit_match = named_pair
+        entry_gate = entry_match.gate
+        exit_gate = exit_match.gate
         entry_name = official_query_name(entry_gate.name)
         exit_name = official_query_name(exit_gate.name)
         if not entry_name or not exit_name or normalize_toll_name(entry_name) == normalize_toll_name(exit_name):

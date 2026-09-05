@@ -1,4 +1,4 @@
-# Korea Trip Optimizer V0.3
+# Korea Trip Optimizer V0.4
 
 Korea Trip Optimizer V0.3 uses MapLibre GL JS with the OpenFreeMap Liberty
 vector basemap. The previous hand-authored GeoJSON preview is no longer a
@@ -7,8 +7,10 @@ and route layer separate from the basemap so a future self-hosted OpenMapTiles
 style can be swapped in without changing marker, selection, or route logic.
 
 V0.3 adds a real car route through a local OSRM instance prepared from a South
-Korea OpenStreetMap PBF. The browser calls FastAPI; it never calls OSRM or a
-public routing API directly.
+Korea OpenStreetMap PBF. V0.4 adds a local OSM toll-gate index and a
+server-side adapter for the official Korea Expressway toll inquiry page. The
+browser calls FastAPI; it never calls OSRM, a toll API, or a public routing API
+directly.
 
 During development, the browser requests only the configured OpenFreeMap
 basemap resources externally. There are no Google, Kakao, Naver, Mapbox,
@@ -19,7 +21,8 @@ CDN dependencies.
 
 - Python 3.11 or newer
 - A modern browser with WebGL support
-- Internet access while using the OpenFreeMap development basemap
+- Internet access while using the OpenFreeMap development basemap and the
+  official HTML toll inquiry source
 - A local OSRM runtime and prepared South Korea routing data for route tests
 
 MapLibre GL JS 4.7.1 is vendored under `static/vendor/`; Node.js is not needed
@@ -49,8 +52,9 @@ python -m pip install -r requirements.txt
 python -m uvicorn app:app --reload
 ```
 
-Open `http://127.0.0.1:8000` in a browser. The health endpoint is `/health`
-and local city search is `/api/places/search?q=부산`.
+Open `http://127.0.0.1:8000` in a browser. The health endpoint is `/health`,
+local city search is `/api/places/search?q=부산`, and local OSRM status is
+`/api/routing/status`.
 
 ## Basemap provider
 
@@ -139,7 +143,8 @@ python scripts/verify_offline.py
 
 The fast Python tests cover the server regression endpoints, local search,
 canonical routing models, mocked OSRM failures, provider configuration,
-retired preview removal, and fixed static-file safety. The integration suite
+retired preview removal, fixed static-file safety, toll models, matching,
+parser, cache, and API behavior. The integration suite
 requires a running local OSRM and can be run with:
 
 ```bash
@@ -147,7 +152,14 @@ python -m pytest -q -m integration
 ```
 
 The Node tests cover localStorage save/restore, malformed payload handling,
-coordinate validation, the 20-metre guard, and route metric formatting.
+coordinate validation, the 20-metre guard, and route metric formatting. Run
+the V0.4 JavaScript syntax checks with:
+
+```powershell
+node --check static/js/toll.js
+node --check static/js/toll_markers.js
+node --check static/js/route.js
+```
 
 For the actual Chromium basemap and selection smoke test, start a server on
 port 8765 and use the existing local Playwright tooling:
@@ -164,10 +176,19 @@ $env:NODE_PATH = (Resolve-Path .map-build\node_modules)
 node scripts\browser_smoke.js
 ```
 
+The V0.4 route/toll lifecycle smoke test uses the same setup and is run with:
+
+```powershell
+node scripts\toll_browser_smoke.js
+```
+
 The browser test records every request, verifies that only the local app and
 configured basemap hosts are contacted, checks attribution and OpenMapTiles
 source layers, visits twelve Korean regions, exercises selection and reload,
-and calculates and invalidates routes through the local API.
+and calculates and invalidates routes through the local API. The V0.4 smoke
+test additionally checks the toll endpoint's canonical result/partial-result
+handling, TG marker rendering, vehicle-class invalidation, and route/toll
+stale-state protection.
 
 ## Network audit
 
@@ -256,6 +277,51 @@ no-route behavior. Locations within 20 metres are rejected, and endpoint
 snapping farther than 5 km is rejected instead of silently producing a
 misleading route.
 
+## Local Toll Calculation
+
+Build the toll index after the South Korea PBF and its local OSRM graph are
+available:
+
+```powershell
+python scripts/build_tollgate_index.py
+```
+
+Use `--force` only when intentionally rebuilding the generated SQLite file.
+The builder reads the PBF and records OSM `barrier=toll_booth`,
+`highway=toll_gantry`, and `toll=yes` road evidence in
+`data/korea_trip.db`. Generated data is ignored by Git. The observed PBF
+produced 2,195 gate features and 20,398 toll-tagged ways in this workspace;
+these are data observations, not permanent pins.
+
+The toll endpoints are:
+
+```text
+GET  /api/tolls/status
+POST /api/tolls/calculate
+```
+
+The backend matches the canonical OSRM route against local OSM evidence and,
+when the journey is supported, submits the normal public HTML form to the
+[한국도로공사 통행요금조회 페이지](https://www.ex.co.kr/portal/usefee/selectUseFeeNList.do).
+It uses the official entry/exit result as the journey total; it never sums
+individual gate prices. The source adapter uses a bounded timeout, a 30-day
+SQLite cache, and a 1.5-second interval between requests. It does not call the
+page's internal AJAX helper, any OpenAPI endpoint, or an alternative public
+service.
+
+The supported authoritative operator in V0.4 is 한국도로공사. If a route
+contains an unsupported private toll road, an unknown operator, an ambiguous
+gate match, or a parser/source failure, the API returns `complete: false` and
+does not turn the unknown amount into `0원`. A route with sufficiently verified
+free-road evidence can return a complete zero result. Vehicle classes are
+`class_1`, `compact`, `class_2`, `class_3`, `class_4`, and `class_5`.
+
+The UI displays detected OSM gate candidates as `TG` markers and keeps route,
+toll, and selection lifecycles separate. Changing the route or vehicle class
+invalidates the toll result. Toll results are not stored in localStorage;
+origin/destination locations are stored and the toll is recalculated after a
+reload.
+
 ## Route behavior and limitations
 
 With both locations selected, **경로 계산** requests one local OSRM car route.
@@ -263,13 +329,16 @@ The route is rendered in its own MapLibre source/layer and the viewport fits
 the route. Changing either location, swapping A/B, or clearing the selection
 removes the stale route; route geometry is not persisted in localStorage.
 
-V0.3 does not implement tolls, fuel costs, accommodation, restaurants,
+V0.4 does not implement fuel costs, accommodation, restaurants,
 attractions, reviews, recommendations, itineraries, multi-stop routing,
 traffic-aware routing, public transit, walking, or cycling. Local search is
 still limited to the bundled city dataset.
 
-## V0.3 boundaries
+## V0.4 boundaries
 
-This version does not implement tolls, fuel costs, crawling, recommendations,
-or a nationwide geocoder. The development basemap may request resources from
-the explicitly configured OpenFreeMap host; route computation is local-only.
+This version does not implement fuel prices, recommendations, or a nationwide
+geocoder. Toll collection is limited to the fixed official HTML source and the
+local OSM evidence described above. The development basemap may request
+resources from the explicitly configured OpenFreeMap host; route computation
+is local-only. The official toll webpage may change its HTML or access policy;
+such failures are surfaced as incomplete results rather than guessed prices.

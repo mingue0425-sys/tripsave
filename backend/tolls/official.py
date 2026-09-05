@@ -14,7 +14,8 @@ import re
 import time
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.robotparser import RobotFileParser
 
 import httpx
 from bs4 import BeautifulSoup
@@ -23,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from backend.tolls.models import TollVehicleClass
 from backend.tolls.names import official_query_name
 from config import (
+    APP_VERSION,
     OFFICIAL_TOLL_URL,
     TOLL_CONNECT_TIMEOUT_S,
     TOLL_MAX_PRICE_KRW,
@@ -33,6 +35,7 @@ from config import (
 
 
 PARSER_VERSION = "ex-usefee-html-v1"
+CRAWLER_USER_AGENT = f"KoreaTripOptimizer/{APP_VERSION} (+local toll calculator)"
 _PRICE_PATTERN = re.compile(r"(?<!\d)(\d[\d,\s]*)(?!\d)")
 _DISTANCE_PATTERN = re.compile(r"([0-9]+(?:[.,][0-9]+)?)\s*(?:km|㎞)", re.IGNORECASE)
 
@@ -79,6 +82,8 @@ def parse_price_krw(value: object, *, max_price_krw: int = TOLL_MAX_PRICE_KRW) -
     if not isinstance(value, str):
         raise OfficialTollParserError("A toll price cell is not text.")
     text = html_module.unescape(value).replace("\xa0", " ").strip()
+    if re.search(r"-\s*\d", text):
+        raise OfficialTollParserError(f"Could not parse a negative toll price: {text!r}")
     match = _PRICE_PATTERN.search(text)
     if not match:
         raise OfficialTollParserError(f"Could not parse a toll price: {text!r}")
@@ -230,6 +235,7 @@ class KoreaExpresswayTollCrawler:
         self.transport = transport
         self._lock = asyncio.Lock()
         self._next_request_at = 0.0
+        self._robots_checked = False
 
     async def _wait_for_rate_limit(self) -> None:
         delay = self._next_request_at - time.monotonic()
@@ -248,6 +254,31 @@ class KoreaExpresswayTollCrawler:
                 f"The official toll page returned HTTP {response.status_code}."
             )
 
+    def _robots_url(self) -> str:
+        parsed = urlsplit(self.source_url)
+        return urlunsplit((parsed.scheme, parsed.netloc, "/robots.txt", "", ""))
+
+    async def _ensure_robots_allowed(self, client: httpx.AsyncClient) -> None:
+        """Check the source's current robots policy once per crawler instance."""
+
+        if self._robots_checked:
+            return
+        await self._wait_for_rate_limit()
+        response = await client.get(self._robots_url())
+        # A missing robots file has no rules to apply. Other failures are
+        # source failures, not permission to proceed blindly.
+        if response.status_code == 404:
+            self._robots_checked = True
+            return
+        self._check_response(response)
+        parser = RobotFileParser()
+        parser.parse(response.text.splitlines())
+        if not parser.can_fetch(CRAWLER_USER_AGENT, self.source_url):
+            raise OfficialTollAccessDeniedError(
+                "The official source robots policy does not allow this page."
+            )
+        self._robots_checked = True
+
     async def lookup(self, entry_name: str, exit_name: str) -> OfficialTollLookup:
         entry = official_query_name(entry_name)
         exit = official_query_name(exit_name)
@@ -259,11 +290,12 @@ class KoreaExpresswayTollCrawler:
                     timeout=self.timeout,
                     follow_redirects=True,
                     headers={
-                        "User-Agent": "KoreaTripOptimizer/0.4 (+local toll calculator)",
+                        "User-Agent": CRAWLER_USER_AGENT,
                         "Accept": "text/html,application/xhtml+xml",
                     },
                     transport=self.transport,
                 ) as client:
+                    await self._ensure_robots_allowed(client)
                     await self._wait_for_rate_limit()
                     initial = await client.get(self.source_url)
                     self._check_response(initial)

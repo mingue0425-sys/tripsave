@@ -28,6 +28,24 @@ from backend.tolls.schema import initialize_schema, encode_geometry
 from config import ROUTING_PBF_FILE, TOLL_INDEX_DB
 
 
+# Only current vehicle-road ways are useful for route toll evidence.  The PBF
+# also contains toll=yes ferry, footway, construction, and non-highway
+# features; indexing those would create false toll matches near a car route.
+TOLL_ROAD_HIGHWAYS = frozenset(
+    {
+        "motorway",
+        "motorway_link",
+        "trunk",
+        "trunk_link",
+        "primary",
+        "primary_link",
+        "secondary",
+        "secondary_link",
+        "tertiary",
+        "tertiary_link",
+    }
+)
+
 def tag_dict(element: object) -> dict[str, str]:
     return {
         str(tag.k): str(tag.v)
@@ -138,6 +156,10 @@ class IndexBuilder(osmium.SimpleHandler):
                 self.stats["invalid_gate_locations"] += 1
 
         if tags.get("toll") != "yes" or len(coordinates) < 2:
+            return
+
+        if tags.get("highway") not in TOLL_ROAD_HIGHWAYS:
+            self.stats["toll_yes_non_vehicle_ways"] += 1
             return
 
         self.stats["toll_yes_ways"] += 1

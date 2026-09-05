@@ -144,3 +144,14 @@ def test_service_marks_unknown_operator_partial_instead_of_free(tmp_path) -> Non
     assert result.toll.complete is False
     assert result.toll.total_toll_krw is None
     assert result.toll.reason == "unknown_toll_operator"
+
+
+def test_service_does_not_infer_free_from_empty_sparse_index(tmp_path) -> None:
+    calculator = TollCalculator(index_path=tmp_path / "unused.db")
+    calculator.index = FakeIndex(TollAnalysis(toll_road_detected=False))
+
+    result = asyncio.run(calculator.calculate(request()))
+    assert result.status == "partial"
+    assert result.toll.complete is False
+    assert result.toll.total_toll_krw is None
+    assert result.toll.reason == "toll_status_not_proven"

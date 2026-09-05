@@ -9,7 +9,7 @@ The application does not serve or render the retired
 `maps/tiles/korea-basemap.geojson` preview. City search data is separate
 application data under `static/data/places.json` and is not a basemap.
 
-## V0.3 South Korea routing dataset
+## V0.3/V0.4 South Korea routing and toll dataset
 
 Routing uses a separate South Korea OpenStreetMap extract. It is not the
 browser basemap and is never downloaded or queried by the application at
@@ -30,6 +30,35 @@ The extract observed while building V0.3 was 286,625,768 bytes (about 273.3
 MiB) with MD5 `9a4e7b5c32df7d038440099b22ce6268`. Geofabrik extracts change;
 these values are an observation, not a permanent data pin. The PBF is ignored
 by Git.
+
+V0.4 also reads this same PBF to build a local SQLite toll-evidence index:
+
+```powershell
+python scripts/build_tollgate_index.py
+```
+
+The expected output is `data/korea_trip.db`. The builder streams only
+toll-relevant records and does not send the PBF to a remote service. It
+currently records these observed OSM forms:
+
+```text
+barrier=toll_booth
+highway=toll_gantry
+toll=yes
+```
+
+In the workspace extract, the PBF contained 1,452 toll-booth nodes, 559
+toll-booth ways, 184 toll-gantry nodes, and 20,398 `toll=yes` ways. The
+builder indexed 20,237 current vehicle-road ways and excluded 161 non-vehicle
+or non-road ways. OSM coverage and tagging can change; a gate candidate is
+evidence, not by itself an authoritative price or proof that a journey is
+free. Rebuild the index after replacing the PBF. The SQLite database is
+ignored by Git.
+
+The index schema contains `toll_gates`, `toll_road_ways`, an RTree corridor
+index, `toll_rates_cache`, and metadata. Gate names retain their raw OSM
+values; normalization is conservative and preserves distinct stems such as
+서울 and 서울산.
 
 ## OSRM MLD graph
 
@@ -91,6 +120,23 @@ osrm-routed --algorithm mld --ip 127.0.0.1 --port 5000 `
 `python scripts/setup_routing.py --start` runs this in the foreground and
 waits for its local health endpoint. Missing data or tools produce setup
 instructions; there is no public OSRM fallback.
+
+## V0.4 official toll source
+
+The toll crawler uses the [한국도로공사 통행요금조회
+page](https://www.ex.co.kr/portal/usefee/selectUseFeeNList.do) as a normal
+HTML client. It first establishes a session with GET, then submits the public
+page form with the departure and arrival toll-office names. It does not call
+the page's helper AJAX endpoint or a public toll API. Requests are bounded and
+rate-limited, and a 30-day cache avoids repeated lookups.
+
+The first authoritative support target is 한국도로공사-managed toll roads.
+Private operators or unresolved OSM operator evidence are returned as an
+incomplete toll result. Unknown toll is never represented as zero. The
+official page's entry/exit total is used instead of summing OSM gate features,
+which also leaves room for open-system, One Tolling, and linked-charge rules.
+Parser evidence includes the source URL, fetch time, parser version, and a
+hash of the compact parsed result; arbitrary full HTML is not retained.
 
 ## Attribution
 

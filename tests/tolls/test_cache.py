@@ -34,6 +34,7 @@ def test_cache_preserves_direction_and_vehicle_prices(tmp_path) -> None:
 
     assert fresh is not None and fresh.fresh
     assert fresh.lookup.prices[TollVehicleClass.COMPACT] == 9_300
+    assert fresh.lookup.route_label == "서울~부산"
     assert reverse is None
 
 

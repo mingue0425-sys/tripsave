@@ -27,6 +27,8 @@ def test_crawler_uses_normal_html_form_and_utf8_body() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nAllow: /", request=request)
         if request.method == "GET":
             return httpx.Response(200, text="<html>form</html>", request=request)
         assert request.headers["content-type"].startswith(
@@ -45,7 +47,11 @@ def test_crawler_uses_normal_html_form_and_utf8_body() -> None:
 
     result = asyncio.run(run())
     assert result.prices[next(key for key in result.prices if key.value == "class_1")] == 18_600
-    assert [request.method for request in requests] == ["GET", "POST"]
+    assert [request.url.path for request in requests] == [
+        "/robots.txt",
+        "/portal/usefee/selectUseFeeNList.do",
+        "/portal/usefee/selectUseFeeNList.do",
+    ]
 
 
 @pytest.mark.parametrize(
