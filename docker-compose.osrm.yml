@@ -1,0 +1,17 @@
+services:
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:26.7.3-debian
+    container_name: kto-osrm
+    command:
+      - osrm-routed
+      - --algorithm
+      - mld
+      - --ip
+      - 0.0.0.0
+      - --port
+      - "5000"
+      - /data/maps/osrm/south-korea-latest
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - ./:/data:ro

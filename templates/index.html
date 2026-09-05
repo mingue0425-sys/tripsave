@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Korea Trip Optimizer local trip selection map">
+    <title>Korea Trip Optimizer</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="stylesheet" href="/static/vendor/maplibre-gl/maplibre-gl.css">
+    <link rel="stylesheet" href="/static/css/style.css">
+  </head>
+  <body data-map-available="true">
+    <div class="app-shell">
+      <header class="app-header">
+        <div>
+            <p class="eyebrow">V0.4 · LOCAL TOLL ENGINE</p>
+          <h1>Korea Trip Optimizer</h1>
+        </div>
+        <span class="version-badge">{{ app_version }}</span>
+      </header>
+
+      <main class="workspace" aria-label="여행 위치 선택 화면">
+        <aside class="trip-panel" aria-labelledby="trip-panel-title">
+          <div class="panel-heading">
+            <p class="eyebrow">TRIP SETUP</p>
+            <h2 id="trip-panel-title">여행 설정</h2>
+            <p class="panel-help">지도에서 위치를 클릭하거나 작은 도시 목록을 검색하세요.</p>
+          </div>
+
+          <section class="location-card" id="origin-card" data-slot="origin">
+            <div class="location-card-heading">
+              <span class="location-letter location-letter--origin" aria-hidden="true">A</span>
+              <div>
+                <p class="location-kicker">ORIGIN</p>
+                <h3>출발지</h3>
+              </div>
+            </div>
+            <p id="origin-summary" class="location-summary">선택 안 됨</p>
+            <p id="origin-coordinate" class="location-coordinate" hidden></p>
+            <p id="origin-source" class="location-source" hidden></p>
+            <div class="location-actions">
+              <button id="origin-map-button" class="button button--primary" type="button">
+                지도에서 선택
+              </button>
+              <button id="origin-search-toggle" class="button button--secondary" type="button">
+                검색
+              </button>
+              <button id="origin-remove-button" class="button button--quiet" type="button" disabled>
+                삭제
+              </button>
+            </div>
+            <div id="origin-search-panel" class="search-panel" hidden>
+              <label for="origin-search-input">출발지 도시 검색</label>
+              <div class="search-input-row">
+                <input id="origin-search-input" type="search" autocomplete="off" placeholder="예: 부산 또는 Busan">
+                <button id="origin-search-close" class="icon-button" type="button" aria-label="출발지 검색 닫기">×</button>
+              </div>
+              <ul id="origin-search-results" class="search-results" role="listbox" aria-label="출발지 검색 결과"></ul>
+            </div>
+          </section>
+
+          <section class="location-card" id="destination-card" data-slot="destination">
+            <div class="location-card-heading">
+              <span class="location-letter location-letter--destination" aria-hidden="true">B</span>
+              <div>
+                <p class="location-kicker">DESTINATION</p>
+                <h3>목적지</h3>
+              </div>
+            </div>
+            <p id="destination-summary" class="location-summary">선택 안 됨</p>
+            <p id="destination-coordinate" class="location-coordinate" hidden></p>
+            <p id="destination-source" class="location-source" hidden></p>
+            <div class="location-actions">
+              <button id="destination-map-button" class="button button--primary" type="button">
+                지도에서 선택
+              </button>
+              <button id="destination-search-toggle" class="button button--secondary" type="button">
+                검색
+              </button>
+              <button id="destination-remove-button" class="button button--quiet" type="button" disabled>
+                삭제
+              </button>
+            </div>
+            <div id="destination-search-panel" class="search-panel" hidden>
+              <label for="destination-search-input">목적지 도시 검색</label>
+              <div class="search-input-row">
+                <input id="destination-search-input" type="search" autocomplete="off" placeholder="예: 강릉 또는 Gangneung">
+                <button id="destination-search-close" class="icon-button" type="button" aria-label="목적지 검색 닫기">×</button>
+              </div>
+              <ul id="destination-search-results" class="search-results" role="listbox" aria-label="목적지 검색 결과"></ul>
+            </div>
+          </section>
+
+          <div class="panel-actions">
+            <button id="swap-button" class="button button--secondary" type="button" disabled>
+              <span aria-hidden="true">A ↔ B</span> 위치 교환
+            </button>
+            <button id="clear-button" class="button button--quiet" type="button">
+              전체 초기화
+            </button>
+          </div>
+
+          <section class="route-panel" aria-labelledby="route-panel-title">
+            <div class="route-panel-heading">
+              <p class="location-kicker">DRIVING ROUTE</p>
+              <h2 id="route-panel-title">자동차 경로</h2>
+            </div>
+            <p id="route-summary" class="route-summary">
+              출발지와 목적지를 모두 선택하세요.
+            </p>
+            <button id="route-calculate" class="button button--route" type="button" disabled>
+              경로 계산
+            </button>
+            <dl id="route-metrics" class="route-metrics" hidden>
+              <div>
+                <dt>거리</dt>
+                <dd id="route-distance">—</dd>
+              </div>
+              <div>
+                <dt>예상 시간</dt>
+                <dd id="route-duration">—</dd>
+              </div>
+            </dl>
+            <p id="route-status" class="route-status" role="status" aria-live="polite">
+              로컬 OSRM 경로 엔진을 준비하는 중입니다.
+            </p>
+
+            <div class="vehicle-selector">
+              <label for="vehicle-class">차종</label>
+              <select id="vehicle-class">
+                <option value="class_1">1종 승용/소형차</option>
+                <option value="compact">1종 경차</option>
+                <option value="class_2">2종 중형차</option>
+                <option value="class_3">3종 대형차</option>
+                <option value="class_4">4종 대형화물차</option>
+                <option value="class_5">5종 특수화물차</option>
+              </select>
+            </div>
+
+            <section class="toll-panel" aria-labelledby="toll-panel-title">
+              <div class="toll-panel-heading">
+                <div>
+                  <p class="location-kicker">OFFICIAL TOLL CHECK</p>
+                  <h2 id="toll-panel-title">통행료</h2>
+                </div>
+                <span id="toll-gates-count" class="toll-gates-count" hidden></span>
+              </div>
+              <p id="toll-summary" class="toll-summary">
+                경로 계산 후 공식 요금을 확인할 수 있습니다.
+              </p>
+              <button id="toll-calculate" class="button button--toll" type="button" disabled>
+                통행료 확인
+              </button>
+              <dl id="toll-metrics" class="toll-metrics" hidden>
+                <div>
+                  <dt>예상 통행료</dt>
+                  <dd id="toll-total">—</dd>
+                </div>
+                <div>
+                  <dt>조회 차종</dt>
+                  <dd id="toll-vehicle">—</dd>
+                </div>
+              </dl>
+              <p id="toll-status" class="toll-status" role="status" aria-live="polite">
+                공식 웹페이지 조회는 서버에서 제한적으로 수행합니다.
+              </p>
+            </section>
+          </section>
+
+          <div class="selection-status-block">
+            <p class="status-label">상태</p>
+            <p id="selection-status" class="selection-status" role="status" aria-live="polite">
+              출발지와 목적지를 지도 또는 검색으로 선택하세요.
+            </p>
+          </div>
+        </aside>
+
+        <section class="map-stage" aria-label="대한민국 지도">
+          <div id="map" class="map" aria-label="Interactive map of South Korea"></div>
+          <div id="map-loading" class="map-message map-message--loading" role="status">
+            {{ basemap.provider }} basemap을 불러오는 중…
+          </div>
+          <div
+            id="map-error"
+            class="map-message map-message--error is-hidden"
+            role="alert"
+            hidden
+          >
+            <strong>Basemap을 불러오지 못했습니다.</strong>
+            <span id="map-error-detail">Basemap provider를 사용할 수 없습니다.</span>
+            <span>네트워크와 basemap provider 설정을 확인하세요.</span>
+          </div>
+          <div class="map-legend" aria-label="Map legend">
+            <span class="basemap-label">{{ basemap.provider }} · {{ basemap.id }}</span>
+            <span><i class="legend-marker legend-marker--origin">A</i>출발지</span>
+            <span><i class="legend-marker legend-marker--destination">B</i>목적지</span>
+            <span><i class="legend-line">━</i>자동차 경로</span>
+            <span><i class="legend-toll">TG</i>톨게이트 후보</span>
+          </div>
+        </section>
+      </main>
+
+      <footer class="coordinate-bar">
+        <span class="coordinate-label">Coordinates</span>
+        <output id="coordinate-display" aria-live="polite">—</output>
+        <span id="map-state" class="map-state">Basemap loading</span>
+      </footer>
+    </div>
+
+    <script>
+      window.KTO_CONFIG = {{ map_config | tojson }};
+    </script>
+    <script src="/static/vendor/maplibre-gl/maplibre-gl.js" defer></script>
+    <script src="/static/js/map.js" defer></script>
+    <script src="/static/js/storage.js" defer></script>
+    <script src="/static/js/markers.js" defer></script>
+    <script src="/static/js/selection.js" defer></script>
+    <script src="/static/js/search.js" defer></script>
+    <script src="/static/js/route_format.js" defer></script>
+    <script src="/static/js/route_layer.js" defer></script>
+    <script src="/static/js/route.js" defer></script>
+    <script src="/static/js/toll_markers.js" defer></script>
+    <script src="/static/js/toll.js" defer></script>
+  </body>
+</html>

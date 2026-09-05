@@ -1,0 +1,178 @@
+[
+  {
+    "id": "city-seoul",
+    "name": "서울",
+    "aliases": ["서울특별시", "Seoul"],
+    "lat": 37.5665,
+    "lng": 126.978,
+    "type": "city"
+  },
+  {
+    "id": "city-incheon",
+    "name": "인천",
+    "aliases": ["인천광역시", "Incheon"],
+    "lat": 37.4563,
+    "lng": 126.7052,
+    "type": "city"
+  },
+  {
+    "id": "city-chuncheon",
+    "name": "춘천",
+    "aliases": ["춘천시", "Chuncheon"],
+    "lat": 37.8813,
+    "lng": 127.7298,
+    "type": "city"
+  },
+  {
+    "id": "city-gangneung",
+    "name": "강릉",
+    "aliases": ["강릉시", "Gangneung"],
+    "lat": 37.7519,
+    "lng": 128.8761,
+    "type": "city"
+  },
+  {
+    "id": "city-wonju",
+    "name": "원주",
+    "aliases": ["원주시", "Wonju"],
+    "lat": 37.342,
+    "lng": 127.944,
+    "type": "city"
+  },
+  {
+    "id": "city-suwon",
+    "name": "수원",
+    "aliases": ["수원시", "Suwon"],
+    "lat": 37.2636,
+    "lng": 127.0286,
+    "type": "city"
+  },
+  {
+    "id": "city-daejeon",
+    "name": "대전",
+    "aliases": ["대전광역시", "Daejeon"],
+    "lat": 36.3504,
+    "lng": 127.3845,
+    "type": "city"
+  },
+  {
+    "id": "city-cheongju",
+    "name": "청주",
+    "aliases": ["청주시", "Cheongju"],
+    "lat": 36.642,
+    "lng": 127.489,
+    "type": "city"
+  },
+  {
+    "id": "city-jeonju",
+    "name": "전주",
+    "aliases": ["전주시", "Jeonju"],
+    "lat": 35.824,
+    "lng": 127.148,
+    "type": "city"
+  },
+  {
+    "id": "city-gwangju",
+    "name": "광주",
+    "aliases": ["광주광역시", "Gwangju"],
+    "lat": 35.1595,
+    "lng": 126.8514,
+    "type": "city"
+  },
+  {
+    "id": "city-mokpo",
+    "name": "목포",
+    "aliases": ["목포시", "Mokpo"],
+    "lat": 34.8118,
+    "lng": 126.3922,
+    "type": "city"
+  },
+  {
+    "id": "city-yeosu",
+    "name": "여수",
+    "aliases": ["여수시", "Yeosu"],
+    "lat": 34.7604,
+    "lng": 127.6622,
+    "type": "city"
+  },
+  {
+    "id": "city-jinju",
+    "name": "진주",
+    "aliases": ["진주시", "Jinju"],
+    "lat": 35.18,
+    "lng": 128.1106,
+    "type": "city"
+  },
+  {
+    "id": "city-daegu",
+    "name": "대구",
+    "aliases": ["대구광역시", "Daegu"],
+    "lat": 35.8714,
+    "lng": 128.6014,
+    "type": "city"
+  },
+  {
+    "id": "city-pohang",
+    "name": "포항",
+    "aliases": ["포항시", "Pohang"],
+    "lat": 36.019,
+    "lng": 129.3435,
+    "type": "city"
+  },
+  {
+    "id": "city-gyeongju",
+    "name": "경주",
+    "aliases": ["경주시", "Gyeongju"],
+    "lat": 35.8562,
+    "lng": 129.2248,
+    "type": "city"
+  },
+  {
+    "id": "city-ulsan",
+    "name": "울산",
+    "aliases": ["울산광역시", "Ulsan"],
+    "lat": 35.5384,
+    "lng": 129.3114,
+    "type": "city"
+  },
+  {
+    "id": "city-busan",
+    "name": "부산",
+    "aliases": ["부산광역시", "Busan"],
+    "lat": 35.1796,
+    "lng": 129.0756,
+    "type": "city"
+  },
+  {
+    "id": "city-jeju",
+    "name": "제주",
+    "aliases": ["제주특별자치도", "Jeju"],
+    "lat": 33.4996,
+    "lng": 126.5312,
+    "type": "city"
+  },
+  {
+    "id": "city-seogwipo",
+    "name": "서귀포",
+    "aliases": ["서귀포시", "Seogwipo"],
+    "lat": 33.2541,
+    "lng": 126.5601,
+    "type": "city"
+  },
+  {
+    "id": "city-sokcho",
+    "name": "속초",
+    "aliases": ["속초시", "Sokcho"],
+    "lat": 38.207,
+    "lng": 128.5912,
+    "type": "city"
+  },
+  {
+    "id": "city-gunsan",
+    "name": "군산",
+    "aliases": ["군산시", "Gunsan"],
+    "lat": 35.9677,
+    "lng": 126.7366,
+    "type": "city"
+  }
+]

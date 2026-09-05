@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local secrets and editor files
+.env
+.env.*
+.idea/
+.vscode/
+
+# Future self-hosted OpenStreetMap source and generated tile databases.
+maps/source/*.osm.pbf
+maps/source/*.osm.pbf.*
+maps/tiles/*
+!maps/tiles/.gitkeep
+maps/osrm/*
+!maps/osrm/.gitkeep
+
+# Local build/download scratch space
+.map-build/
+
+# Generated local OSM toll index and crawler cache.  Keep only the schema/build
+# scripts and documentation in source control.
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/*.building

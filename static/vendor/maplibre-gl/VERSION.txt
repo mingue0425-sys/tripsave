@@ -1,0 +1,3 @@
+MapLibre GL JS 4.7.1
+
+The JavaScript and CSS files in this directory are vendored runtime assets.
