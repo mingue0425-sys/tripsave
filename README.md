@@ -290,8 +290,9 @@ Use `--force` only when intentionally rebuilding the generated SQLite file.
 The builder reads the PBF and records OSM `barrier=toll_booth`,
 `highway=toll_gantry`, and `toll=yes` road evidence in
 `data/korea_trip.db`. Generated data is ignored by Git. The observed PBF
-produced 2,195 gate features and 20,398 toll-tagged ways in this workspace;
-these are data observations, not permanent pins.
+produced 2,195 gate features, 20,398 raw toll-tagged ways, and 20,237
+vehicle-road ways retained by the index in this workspace; these are data
+observations, not permanent pins.
 
 The toll endpoints are:
 
@@ -312,8 +313,9 @@ service.
 The supported authoritative operator in V0.4 is 한국도로공사. If a route
 contains an unsupported private toll road, an unknown operator, an ambiguous
 gate match, or a parser/source failure, the API returns `complete: false` and
-does not turn the unknown amount into `0원`. A route with sufficiently verified
-free-road evidence can return a complete zero result. Vehicle classes are
+does not turn the unknown amount into `0원`. The current sparse index does not
+treat an empty candidate set as proof of a free route; it returns an incomplete
+result until free-road coverage is explicitly verified. Vehicle classes are
 `class_1`, `compact`, `class_2`, `class_3`, `class_4`, and `class_5`.
 
 The UI displays detected OSM gate candidates as `TG` markers and keeps route,

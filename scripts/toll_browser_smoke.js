@@ -118,7 +118,7 @@ async function run() {
     assert(
       tollState.result.complete
         ? Number.isInteger(tollState.result.total_toll_krw) && tollState.result.total_toll_krw >= 0
-        : tollState.result.total_toll_krw === null,
+        : tollState.result.total_toll_krw == null,
       "unknown toll is never displayed as zero"
     );
     assert((await page.locator(".toll-marker").count()) > 0, "detected OSM toll candidates render as TG markers");
