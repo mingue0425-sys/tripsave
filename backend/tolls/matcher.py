@@ -6,6 +6,7 @@ import math
 from collections.abc import Sequence
 
 from backend.tolls.models import MatchedTollGate, TollGate
+from backend.tolls.names import normalize_toll_name
 
 
 Coordinate = tuple[float, float]  # canonical GeoJSON boundary: (lng, lat)
@@ -88,14 +89,41 @@ def _confidence(distance_m: float, threshold_m: float) -> str:
     return "low"
 
 
-def match_toll_gates(
+def _compatible_context(first: TollGate, second: TollGate) -> bool:
+    """Return whether two nearby features can be one logical tollgate.
+
+    Missing OSM context is treated as unknown, not as a mismatch.  Explicitly
+    different names, roads, or operators are kept separate even when their
+    geometry is close (for example, parallel carriageways or a nearby ramp).
+    """
+
+    first_name = normalize_toll_name(first.normalized_name or first.name)
+    second_name = normalize_toll_name(second.normalized_name or second.name)
+    if first_name and second_name and first_name != second_name:
+        return False
+    if (
+        first.road_name
+        and second.road_name
+        and normalize_toll_name(first.road_name)
+        != normalize_toll_name(second.road_name)
+    ):
+        return False
+    if (
+        first.operator
+        and second.operator
+        and first.operator.casefold().strip() != second.operator.casefold().strip()
+    ):
+        return False
+    return True
+
+
+def project_toll_gate_candidates(
     route_coordinates: Sequence[Coordinate],
     gates: Sequence[TollGate],
     *,
     threshold_m: float,
-    deduplication_threshold_m: float,
 ) -> list[MatchedTollGate]:
-    """Project nearby OSM gate candidates and collapse lane duplicates."""
+    """Project every spatial candidate without treating it as a charge."""
 
     matches: list[MatchedTollGate] = []
     for gate in gates:
@@ -111,43 +139,101 @@ def match_toll_gates(
                     confidence=_confidence(distance_m, threshold_m),
                 )
             )
+    return sorted(matches, key=lambda match: (match.position_along_route_m, match.distance_to_route_m))
 
-    matches.sort(key=lambda match: (match.position_along_route_m, match.distance_to_route_m))
+
+def collapse_toll_gate_duplicates(
+    matches: Sequence[MatchedTollGate], *, deduplication_threshold_m: float
+) -> tuple[list[MatchedTollGate], list[MatchedTollGate]]:
+    """Collapse lane/way duplicates and retain a fully annotated raw list."""
+
     groups: list[list[MatchedTollGate]] = []
-    for match in matches:
-        if not groups:
-            groups.append([match])
-            continue
-        previous = groups[-1][-1]
-        position_gap = match.position_along_route_m - previous.position_along_route_m
-        location_gap = math.hypot(
-            (match.gate.lng - previous.gate.lng)
-            * _meters_per_degree_longitude(match.gate.lat),
-            (match.gate.lat - previous.gate.lat) * _meters_per_degree_latitude(),
-        )
-        names_compatible = (
-            not match.gate.normalized_name
-            or not previous.gate.normalized_name
-            or match.gate.normalized_name == previous.gate.normalized_name
-        )
-        if (
-            position_gap <= deduplication_threshold_m
-            and location_gap <= deduplication_threshold_m
-            and names_compatible
-        ):
-            groups[-1].append(match)
-        else:
-            groups.append([match])
-
-    representatives: list[MatchedTollGate] = []
-    for group in groups:
-        representatives.append(
-            min(
+    for match in sorted(matches, key=lambda item: (item.position_along_route_m, item.distance_to_route_m)):
+        compatible_group: list[MatchedTollGate] | None = None
+        for group in groups:
+            anchor = min(
                 group,
-                key=lambda match: (
-                    match.distance_to_route_m,
-                    0 if match.gate.name else 1,
-                ),
+                key=lambda item: (item.distance_to_route_m, item.position_along_route_m),
+            )
+            position_gap = abs(match.position_along_route_m - anchor.position_along_route_m)
+            location_gap = coordinate_distance_meters(
+                (match.gate.lng, match.gate.lat), (anchor.gate.lng, anchor.gate.lat)
+            )
+            if (
+                position_gap <= deduplication_threshold_m
+                and location_gap <= deduplication_threshold_m
+                and _compatible_context(match.gate, anchor.gate)
+            ):
+                compatible_group = group
+                break
+        if compatible_group is None:
+            groups.append([match])
+        else:
+            compatible_group.append(match)
+
+    annotated_raw: list[MatchedTollGate] = []
+    representatives: list[MatchedTollGate] = []
+    for index, group in enumerate(groups, start=1):
+        group_id = f"tg-group-{index:03d}"
+        representative = min(
+            group,
+            key=lambda match: (
+                match.distance_to_route_m,
+                0 if match.gate.name else 1,
+                0 if match.gate.operator else 1,
+            ),
+        )
+        for match in group:
+            annotated = match.model_copy(
+                update={
+                    "duplicate_group": group_id,
+                    "duplicate_count": len(group),
+                }
+            )
+            annotated_raw.append(annotated)
+        representatives.append(
+            representative.model_copy(
+                update={
+                    "duplicate_group": group_id,
+                    "duplicate_count": len(group),
+                }
             )
         )
+    annotated_raw.sort(key=lambda match: (match.position_along_route_m, match.distance_to_route_m))
+    representatives.sort(key=lambda match: (match.position_along_route_m, match.distance_to_route_m))
+    return representatives, annotated_raw
+
+
+def match_toll_gates_detailed(
+    route_coordinates: Sequence[Coordinate],
+    gates: Sequence[TollGate],
+    *,
+    threshold_m: float,
+    deduplication_threshold_m: float,
+) -> tuple[list[MatchedTollGate], list[MatchedTollGate]]:
+    """Return ``(logical_gates, raw_candidates)`` for diagnostics and API use."""
+
+    projected = project_toll_gate_candidates(
+        route_coordinates, gates, threshold_m=threshold_m
+    )
+    return collapse_toll_gate_duplicates(
+        projected, deduplication_threshold_m=deduplication_threshold_m
+    )
+
+
+def match_toll_gates(
+    route_coordinates: Sequence[Coordinate],
+    gates: Sequence[TollGate],
+    *,
+    threshold_m: float,
+    deduplication_threshold_m: float,
+) -> list[MatchedTollGate]:
+    """Project nearby OSM gate candidates and collapse lane duplicates."""
+
+    representatives, _ = match_toll_gates_detailed(
+        route_coordinates,
+        gates,
+        threshold_m=threshold_m,
+        deduplication_threshold_m=deduplication_threshold_m,
+    )
     return representatives

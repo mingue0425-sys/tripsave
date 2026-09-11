@@ -1,4 +1,8 @@
-from backend.tolls.matcher import coordinate_distance_meters, match_toll_gates
+from backend.tolls.matcher import (
+    coordinate_distance_meters,
+    match_toll_gates,
+    match_toll_gates_detailed,
+)
 from backend.tolls.models import TollGate
 
 
@@ -43,3 +47,21 @@ def test_gate_outside_threshold_is_not_inferred_as_route_gate() -> None:
         deduplication_threshold_m=150.0,
     )
     assert matches == []
+
+
+def test_detailed_matching_keeps_raw_candidates_separate_from_logical_gates() -> None:
+    logical, raw = match_toll_gates_detailed(
+        [(127.0, 36.0), (127.1, 36.0)],
+        [
+            gate(1, "서울", 127.02, 36.0),
+            gate(2, "부산", 127.08, 36.0),
+            gate(3, "부산", 127.08025, 36.0),
+        ],
+        threshold_m=100.0,
+        deduplication_threshold_m=150.0,
+    )
+
+    assert len(raw) == 3
+    assert len(logical) == 2
+    assert sum(item.duplicate_count for item in logical) == 3
+    assert len({item.duplicate_group for item in raw}) == 2

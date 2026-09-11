@@ -17,9 +17,12 @@ def test_root_renders_open_basemap_shell() -> None:
     assert "/static/js/markers.js" in response.text
     assert "/static/js/route.js" in response.text
     assert "/static/js/toll.js" in response.text
+    assert "/static/js/cost.js" in response.text
     assert "/static/js/toll_markers.js" in response.text
     assert "/api/routes" in response.text
     assert "/api/tolls/calculate" in response.text
+    assert "/api/fuel/calculate" in response.text
+    assert "/api/costs/driving" in response.text
     assert "/api/places/search" in response.text
     assert "OpenFreeMap" in response.text
 
@@ -28,7 +31,7 @@ def test_health() -> None:
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "version": "0.4.0"}
+    assert response.json() == {"status": "ok", "version": "0.5.0"}
 
 
 def test_retired_preview_map_routes_are_not_served() -> None:

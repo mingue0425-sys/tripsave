@@ -21,16 +21,23 @@ from backend.tolls.errors import (
 )
 from backend.tolls.index import TollIndex, TollIndexUnavailableError
 from backend.tolls.models import (
+    MatchedTollGate,
+    OfficialStationReference,
     TollCalculationRequest,
+    TollDiagnostics,
+    TollFailureCode,
     TollJourney,
     TollResponse,
     TollResult,
+    TollStage,
 )
 from backend.tolls.names import normalize_toll_name, official_query_name
 from backend.tolls.official import (
     KoreaExpresswayTollCrawler,
+    OfficialStationStore,
     OfficialTollError,
     OfficialTollLookup,
+    OfficialTollStationNotFoundError,
 )
 from config import (
     OFFICIAL_TOLL_URL,
@@ -45,7 +52,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class TollCalculator:
-    """Coordinate OSM evidence, official lookup, caching, and normalization."""
+    """Coordinate OSM evidence, official lookup, caching, and diagnostics."""
 
     def __init__(
         self,
@@ -56,19 +63,23 @@ class TollCalculator:
     ) -> None:
         self.index = TollIndex(index_path)
         self.cache = cache or TollRateCache(index_path, ttl_days=TOLL_CACHE_TTL_DAYS)
-        self.crawler = crawler or KoreaExpresswayTollCrawler(source_url=OFFICIAL_TOLL_URL)
+        self.crawler = crawler or KoreaExpresswayTollCrawler(
+            source_url=OFFICIAL_TOLL_URL,
+            station_store=OfficialStationStore(index_path),
+        )
         self._lookup_lock = asyncio.Lock()
         self.metrics: Counter[str] = Counter()
+        self._debug_by_route: dict[str, TollDiagnostics] = {}
 
     async def status(self) -> dict[str, object]:
         ready = self.index.ready
         result: dict[str, object] = {
             "status": "ready" if ready else "unavailable",
-            "engine": "osm+tollgate-index+official-web",
+            "engine": "osm+tollgate-index+official-web-browser-first",
             "profile": "car",
             "local_index": ready,
             "official_source": OFFICIAL_TOLL_URL,
-            "source_policy": "normal_html_only",
+            "source_policy": "playwright_normal_html_first",
             "metrics": dict(self.metrics),
         }
         if not ready:
@@ -77,6 +88,14 @@ class TollCalculator:
                 "Run scripts/build_tollgate_index.py."
             )
         return result
+
+    def debug(self, route_id: str) -> dict[str, object] | None:
+        diagnostics = self._debug_by_route.get(route_id)
+        if diagnostics is None:
+            return None
+        value = diagnostics.model_dump(mode="json")
+        value["route_id"] = route_id
+        return value
 
     @staticmethod
     def _route_id(request: TollCalculationRequest) -> str:
@@ -99,8 +118,6 @@ class TollCalculator:
 
     @classmethod
     def _validate_route_binding(cls, request: TollCalculationRequest) -> None:
-        # Reuse the V0.3 request guard so toll requests cannot bypass the
-        # South Korea bounds or same-location policy.
         try:
             RouteRequest(origin=request.origin, destination=request.destination)
         except ValidationError as error:
@@ -118,9 +135,94 @@ class TollCalculator:
     @staticmethod
     def _operator(analysis) -> str | None:
         operators = [road.operator for road in analysis.toll_roads if road.operator]
+        operators.extend(
+            gate.gate.operator for gate in analysis.gates if gate.gate.operator
+        )
         if not operators:
             return None
         return Counter(operators).most_common(1)[0][0]
+
+    @staticmethod
+    def _advance(
+        diagnostics: TollDiagnostics,
+        stage: TollStage,
+        *,
+        raw_candidates: int | None = None,
+        logical_gates: int | None = None,
+        duplicate_groups: int | None = None,
+    ) -> TollDiagnostics:
+        completed = list(diagnostics.completed_stages)
+        if stage not in completed:
+            completed.append(stage)
+        return diagnostics.model_copy(
+            update={
+                "stage": stage,
+                "completed_stages": completed,
+                **({"raw_candidates": raw_candidates} if raw_candidates is not None else {}),
+                **({"logical_gates": logical_gates} if logical_gates is not None else {}),
+                **(
+                    {"duplicate_groups": duplicate_groups}
+                    if duplicate_groups is not None
+                    else {}
+                ),
+            }
+        )
+
+    def _store_debug(self, route_id: str, diagnostics: TollDiagnostics) -> None:
+        self._debug_by_route[route_id] = diagnostics
+        LOGGER.info(
+            "Toll diagnostics route_id=%s stage=%s failure_stage=%s failure_code=%s "
+            "raw_candidates=%d logical_gates=%d",
+            route_id,
+            diagnostics.stage.value,
+            diagnostics.failure_stage.value if diagnostics.failure_stage else None,
+            diagnostics.failure_code.value if diagnostics.failure_code else None,
+            diagnostics.raw_candidates,
+            diagnostics.logical_gates,
+        )
+        for detail in diagnostics.candidate_details:
+            LOGGER.info(
+                "Toll candidate detail route_id=%s #%s raw_osm_name=%r "
+                "normalized_name=%r lat=%s lng=%s id=%s osm_id=%s "
+                "osm_type=%s gate_type=%s ref=%r barrier=%r highway=%r toll=%r "
+                "operator=%r road_name=%r route_distance_m=%s "
+                "distance_to_route_m=%s position_along_route_m=%s "
+                "duplicate_group=%s candidate_role=%s",
+                route_id,
+                detail.get("candidate_number"),
+                detail.get("raw_osm_name"),
+                detail.get("normalized_name"),
+                detail.get("lat"),
+                detail.get("lng"),
+                detail.get("id"),
+                detail.get("osm_id"),
+                detail.get("osm_type"),
+                detail.get("gate_type"),
+                detail.get("ref"),
+                detail.get("barrier"),
+                detail.get("highway"),
+                detail.get("toll"),
+                detail.get("operator"),
+                detail.get("road_name"),
+                detail.get("route_distance_m"),
+                detail.get("distance_to_route_m"),
+                detail.get("position_along_route_m"),
+                detail.get("duplicate_group"),
+                detail.get("candidate_role"),
+            )
+
+    @staticmethod
+    def _failure(
+        diagnostics: TollDiagnostics,
+        *,
+        stage: TollStage,
+        code: TollFailureCode,
+    ) -> TollDiagnostics:
+        """Record both the last successful lifecycle and the failed stage."""
+
+        return diagnostics.model_copy(
+            update={"failure_stage": stage, "failure_code": code}
+        )
 
     @staticmethod
     def _partial_result(
@@ -128,7 +230,9 @@ class TollCalculator:
         request: TollCalculationRequest,
         route_id: str,
         reason: str,
-        detected_gates,
+        detected_gates: list[MatchedTollGate],
+        logical_gates: list[MatchedTollGate] | None = None,
+        diagnostics: TollDiagnostics | None = None,
         known_toll_krw: int | None = None,
         unknown_segments: int = 1,
     ) -> TollResult:
@@ -140,65 +244,194 @@ class TollCalculator:
             known_toll_krw=known_toll_krw,
             journeys=[],
             detected_toll_gates=detected_gates,
+            logical_toll_gates=logical_gates or [],
             unknown_segments=unknown_segments,
             reason=reason,
             source_status="unavailable",
             route_id=route_id,
+            diagnostics=diagnostics or TollDiagnostics(),
         )
 
     async def _lookup_with_cache(
         self,
         entry_name: str,
         exit_name: str,
-    ) -> tuple[OfficialTollLookup | None, str, datetime | None, str | None]:
-        try:
-            fresh = self.cache.get(entry_name, exit_name)
-        except TollCacheError as error:
-            LOGGER.warning("Toll cache read failed: %s", error)
-            fresh = None
-        if fresh is not None:
+        *,
+        entry_gate=None,
+        exit_gate=None,
+        candidate_pairs: list[tuple[object, object]] | None = None,
+    ) -> tuple[
+        OfficialTollLookup | None,
+        str,
+        datetime | None,
+        str | None,
+        str,
+        object | None,
+        object | None,
+    ]:
+        pairs = candidate_pairs or [(entry_gate, exit_gate)]
+
+        def pair_names(pair: tuple[object, object]) -> tuple[str, str]:
+            candidate_entry, candidate_exit = pair
+            return (
+                getattr(candidate_entry, "gate", candidate_entry).name or entry_name,
+                getattr(candidate_exit, "gate", candidate_exit).name or exit_name,
+            )
+
+        async def cached_candidate(
+            *, allow_stale: bool,
+        ) -> tuple[
+            OfficialTollLookup | None,
+            str,
+            datetime | None,
+            object | None,
+            object | None,
+        ]:
+            for pair in pairs:
+                candidate_entry_name, candidate_exit_name = pair_names(pair)
+                try:
+                    cached = self.cache.get(
+                        candidate_entry_name,
+                        candidate_exit_name,
+                        allow_stale=allow_stale,
+                    )
+                except TollCacheError as error:
+                    LOGGER.warning("Toll cache read failed: %s", error)
+                    continue
+                if cached is not None:
+                    return (
+                        cached.lookup,
+                        "fresh" if cached.fresh else "stale",
+                        cached.lookup.fetched_at,
+                        pair[0],
+                        pair[1],
+                    )
+            return None, "unavailable", None, None, None
+
+        cached_lookup, cached_status, cached_fetched_at, cached_entry, cached_exit = (
+            await cached_candidate(allow_stale=False)
+        )
+        if cached_lookup is not None:
             self.metrics["cache_hit"] += 1
-            return fresh.lookup, "fresh", fresh.lookup.fetched_at, None
+            return (
+                cached_lookup,
+                cached_status,
+                cached_fetched_at,
+                None,
+                "cache",
+                cached_entry,
+                cached_exit,
+            )
 
         self.metrics["cache_miss"] += 1
         async with self._lookup_lock:
-            # A second caller may have populated the cache while waiting.
-            try:
-                fresh = self.cache.get(entry_name, exit_name)
-            except TollCacheError as error:
-                LOGGER.warning("Toll cache recheck failed: %s", error)
-                fresh = None
-            if fresh is not None:
+            fresh_lookup, fresh_status, fresh_fetched_at, fresh_entry, fresh_exit = (
+                await cached_candidate(allow_stale=False)
+            )
+            if fresh_lookup is not None:
                 self.metrics["cache_hit_after_lock"] += 1
-                return fresh.lookup, "fresh", fresh.lookup.fetched_at, None
-            try:
-                stale = self.cache.get(entry_name, exit_name, allow_stale=True)
-            except TollCacheError as error:
-                LOGGER.warning("Toll stale-cache read failed: %s", error)
-                stale = None
-            try:
-                lookup = await self.crawler.lookup(entry_name, exit_name)
-                try:
-                    self.cache.put(entry_name, exit_name, lookup)
-                except TollCacheError as error:
-                    # The official result is still usable in this response;
-                    # do not turn a cache-only write failure into free toll.
-                    LOGGER.warning("Toll cache write failed: %s", error)
-                self.metrics["crawl_success"] += 1
-                return lookup, "fresh", lookup.fetched_at, None
-            except OfficialTollError as error:
-                self.metrics["crawl_failure"] += 1
-                if stale is not None:
-                    self.metrics["stale_cache_used"] += 1
-                    return (
-                        stale.lookup,
-                        "stale",
-                        stale.lookup.fetched_at,
-                        error.code,
-                    )
-                return None, "unavailable", None, error.code
+                return (
+                    fresh_lookup,
+                    fresh_status,
+                    fresh_fetched_at,
+                    None,
+                    "cache",
+                    fresh_entry,
+                    fresh_exit,
+                )
 
-    def _distance_is_consistent(self, route_distance_m: float, lookup: OfficialTollLookup) -> bool:
+            stale_lookup, stale_status, stale_fetched_at, stale_entry, stale_exit = (
+                await cached_candidate(allow_stale=True)
+            )
+            last_error: OfficialTollError | None = None
+            for pair in pairs:
+                candidate_entry_name, candidate_exit_name = pair_names(pair)
+                candidate_entry_gate = getattr(pair[0], "gate", pair[0])
+                candidate_exit_gate = getattr(pair[1], "gate", pair[1])
+                try:
+                    lookup_with_context = getattr(self.crawler, "lookup_with_context", None)
+                    if lookup_with_context is not None:
+                        lookup = await lookup_with_context(
+                            candidate_entry_name,
+                            candidate_exit_name,
+                            entry_gate=candidate_entry_gate,
+                            exit_gate=candidate_exit_gate,
+                        )
+                    else:
+                        lookup = await self.crawler.lookup(
+                            candidate_entry_name,
+                            candidate_exit_name
+                        )
+                    try:
+                        # Persist the canonical official names plus IDs.  The
+                        # returned IDs remain the cache identity even when the
+                        # OSM candidate used for the successful attempt is an
+                        # alias such as ``하남요금소``.
+                        self.cache.put(
+                            lookup.entry_name,
+                            lookup.exit_name,
+                            lookup,
+                        )
+                    except TollCacheError as error:
+                        LOGGER.warning("Toll cache write failed: %s", error)
+                    self.metrics["crawl_success"] += 1
+                    return (
+                        lookup,
+                        "fresh",
+                        lookup.fetched_at,
+                        None,
+                        "browser",
+                        pair[0],
+                        pair[1],
+                    )
+                except OfficialTollStationNotFoundError as error:
+                    # An OSM feature can be a valid spatial candidate but not
+                    # the directional entry station for this journey.  Let
+                    # the next route-progress pair prove itself through the
+                    # official station check instead of guessing.
+                    last_error = error
+                    continue
+                except OfficialTollError as error:
+                    last_error = error
+                    break
+
+            self.metrics["crawl_failure"] += 1
+            if stale_lookup is not None and last_error is not None:
+                self.metrics["stale_cache_used"] += 1
+                return (
+                    stale_lookup,
+                    stale_status,
+                    stale_fetched_at,
+                    last_error.code,
+                    "stale_cache",
+                    stale_entry,
+                    stale_exit,
+                )
+            error_code = last_error.code if last_error is not None else "OFFICIAL_REQUEST_FAILED"
+            return None, "unavailable", None, error_code, "failed", None, None
+
+    @staticmethod
+    def _source_failure_code(value: str | None) -> str:
+        valid = {item.value for item in TollFailureCode}
+        if value in valid:
+            return value
+        if value in {"PARSER_ERROR", "TOLL_SOURCE_UNAVAILABLE", None}:
+            return TollFailureCode.OFFICIAL_REQUEST_FAILED.value
+        return TollFailureCode.OFFICIAL_REQUEST_FAILED.value
+
+    @staticmethod
+    def _source_failure_stage(code: str) -> TollStage:
+        if code == TollFailureCode.OFFICIAL_STATION_NOT_FOUND.value:
+            return TollStage.OFFICIAL_STATION_MATCH_OK
+        if code in {
+            TollFailureCode.OFFICIAL_PARSE_FAILED.value,
+            TollFailureCode.PRICE_NOT_FOUND.value,
+        }:
+            return TollStage.OFFICIAL_RESULT_PARSE_OK
+        return TollStage.OFFICIAL_PAGE_REQUEST_OK
+
+    @staticmethod
+    def _distance_is_consistent(route_distance_m: float, lookup: OfficialTollLookup) -> bool:
         if lookup.distance_km is None:
             return True
         official_distance_m = lookup.distance_km * 1000.0
@@ -223,138 +456,533 @@ class TollCalculator:
         )
 
     @staticmethod
-    def _named_entry_exit(analysis) -> tuple[object, object] | None:
-        """Choose the first and last named candidates for the official form.
+    def _named_entry_exit(analysis) -> tuple[MatchedTollGate, MatchedTollGate] | None:
+        """Resolve one journey from logical route-progress gates.
 
-        Unnamed booth/gantry features remain visible as OSM evidence, but they
-        cannot safely be submitted to the official toll-office lookup. If the
-        route has fewer than two named candidates, the result stays partial.
+        Spatial candidates are not charges.  Only the first and last distinct,
+        named logical gates on the same supported route corridor become the
+        official entry/exit pair; all other logical gates remain intermediate
+        evidence.  The selection is allowed only after duplicate clusters
+        have been collapsed, route positions are monotonic, names are
+        distinct, and explicit operator context is not contradictory.
         """
 
-        named = [match for match in analysis.gates if match.gate.name and match.gate.name.strip()]
+        ordered = sorted(
+            analysis.gates,
+            key=lambda match: (match.position_along_route_m, match.distance_to_route_m),
+        )
+        named = [
+            match
+            for match in ordered
+            if match.gate.name and match.gate.name.strip()
+        ]
         if len(named) < 2:
             return None
+        normalized_names = [normalize_toll_name(match.gate.name) for match in named]
+        if any(not value for value in normalized_names):
+            return None
+        if len(set(normalized_names)) != len(normalized_names):
+            # Repeated names in different logical clusters can indicate a
+            # loop, parallel carriageway, or an unresolved duplicate.  Do not
+            # invent an entry/exit pair from that evidence.
+            return None
+        if named[0].position_along_route_m >= named[-1].position_along_route_m:
+            return None
+        explicit_operators = {
+            match.gate.operator.strip().casefold()
+            for match in named
+            if match.gate.operator and match.gate.operator.strip()
+        }
+        if len(explicit_operators) > 1 and not analysis.toll_road_detected:
+            return None
         return named[0], named[-1]
+
+    @staticmethod
+    def _entry_exit_candidates(
+        analysis, *, max_attempts: int = 8
+    ) -> list[tuple[MatchedTollGate, MatchedTollGate]]:
+        """Return route-progress pairs for official directional validation.
+
+        The first spatially named gate is not necessarily a usable entry for
+        the travel direction: a route can pass an exit-only toll facility or
+        a nearby branch before reaching its actual entry station.  Keep the
+        exit candidates in reverse route order and advance the entry candidate
+        only after the official station/path check rejects the prior pair.
+        This is still one official journey lookup, never a sum of candidates.
+        """
+
+        ordered = sorted(
+            analysis.gates,
+            key=lambda match: (match.position_along_route_m, match.distance_to_route_m),
+        )
+        named = [
+            match
+            for match in ordered
+            if match.gate.name and match.gate.name.strip()
+        ]
+        if len(named) < 2:
+            return []
+        normalized_names = [normalize_toll_name(match.gate.name) for match in named]
+        if any(not value for value in normalized_names):
+            return []
+        if len(set(normalized_names)) != len(normalized_names):
+            return []
+        explicit_operators = {
+            match.gate.operator.strip().casefold()
+            for match in named
+            if match.gate.operator and match.gate.operator.strip()
+        }
+        if len(explicit_operators) > 1 and not analysis.toll_road_detected:
+            return []
+
+        pairs: list[tuple[MatchedTollGate, MatchedTollGate]] = []
+        for exit_index in range(len(named) - 1, 0, -1):
+            for entry_index in range(exit_index):
+                pairs.append((named[entry_index], named[exit_index]))
+                if len(pairs) >= max_attempts:
+                    return pairs
+        return pairs
+
+    @staticmethod
+    def _entry_exit_note(analysis, pair: tuple[MatchedTollGate, MatchedTollGate] | None) -> str:
+        if pair is None:
+            return (
+                "entry/exit unresolved: logical route-progression evidence had "
+                "fewer than two distinct named gates or conflicting context"
+            )
+        entry, exit = pair
+        intermediate_count = max(0, len(analysis.gates) - 2)
+        return (
+            "entry/exit selected after route progression, road/operator context, "
+            f"and duplicate grouping: {entry.gate.name} -> {exit.gate.name}; "
+            f"intermediate logical gates={intermediate_count}"
+        )
+
+    @staticmethod
+    def _apply_candidate_roles(
+        logical_gates: list[MatchedTollGate],
+        raw_candidates: list[MatchedTollGate],
+        entry: MatchedTollGate,
+        exit: MatchedTollGate,
+    ) -> tuple[list[MatchedTollGate], list[MatchedTollGate]]:
+        def role_for(match: MatchedTollGate) -> str:
+            if match.gate.id == entry.gate.id:
+                return "entry"
+            if match.gate.id == exit.gate.id:
+                return "exit"
+            return "intermediate"
+
+        logical = [match.model_copy(update={"candidate_role": role_for(match)}) for match in logical_gates]
+        entry_group = entry.duplicate_group
+        exit_group = exit.duplicate_group
+        raw = []
+        for match in raw_candidates:
+            if match.gate.id == entry.gate.id or (
+                entry_group and match.duplicate_group == entry_group
+            ):
+                role = "entry"
+            elif match.gate.id == exit.gate.id or (
+                exit_group and match.duplicate_group == exit_group
+            ):
+                role = "exit"
+            else:
+                role = "intermediate"
+            raw.append(match.model_copy(update={"candidate_role": role}))
+        return logical, raw
+
+    @staticmethod
+    def _candidate_details(
+        candidates: list[MatchedTollGate], *, route_distance_m: float
+    ) -> list[dict[str, object]]:
+        details: list[dict[str, object]] = []
+        for index, candidate in enumerate(candidates, start=1):
+            tags = candidate.gate.tags
+            details.append(
+                {
+                    "candidate_number": index,
+                    "id": candidate.gate.id,
+                    "raw_osm_name": candidate.gate.name,
+                    "normalized_name": candidate.gate.normalized_name,
+                    "lat": candidate.gate.lat,
+                    "lng": candidate.gate.lng,
+                    "osm_id": candidate.gate.osm_id,
+                    "osm_type": candidate.gate.osm_type,
+                    "gate_type": candidate.gate.gate_type,
+                    "ref": candidate.gate.ref,
+                    "barrier": tags.get("barrier"),
+                    "highway": tags.get("highway"),
+                    "toll": tags.get("toll"),
+                    "operator": candidate.gate.operator,
+                    "road_name": candidate.gate.road_name,
+                    "route_distance_m": route_distance_m,
+                    "distance_to_route_m": candidate.distance_to_route_m,
+                    "position_along_route_m": candidate.position_along_route_m,
+                    "duplicate_group": candidate.duplicate_group,
+                    "candidate_role": candidate.candidate_role,
+                }
+            )
+        return details
+
+    @staticmethod
+    def _station_reference(
+        lookup: OfficialTollLookup, *, entry: bool, matched_osm_name: str
+    ) -> OfficialStationReference | None:
+        official_id = lookup.entry_official_id if entry else lookup.exit_official_id
+        official_name = lookup.entry_name if entry else lookup.exit_name
+        if not official_id:
+            return None
+        confidence = (
+            "verified_exact"
+            if matched_osm_name.strip() == official_name.strip()
+            else "verified_alias"
+        )
+        return OfficialStationReference(
+            official_id=official_id,
+            official_name=official_name,
+            confidence=confidence,
+            matched_osm_name=matched_osm_name,
+        )
 
     async def calculate(self, request: TollCalculationRequest) -> TollResponse:
         self._validate_route_binding(request)
         route_id = self._route_id(request)
+        diagnostics = TollDiagnostics(
+            stage=TollStage.ROUTE_OK,
+            completed_stages=[TollStage.ROUTE_OK],
+        )
+        self._store_debug(route_id, diagnostics)
 
         coordinates = [tuple(point) for point in request.route.geometry.coordinates]
+        route_distance_m = request.route.distance_m
         try:
             analysis = self.index.analyze_route(coordinates)
         except TollIndexUnavailableError as error:
             self.metrics["index_unavailable"] += 1
             raise TollIndexServiceUnavailableError(str(error)) from error
 
-        if not analysis.toll_road_detected and not analysis.gates:
-            # Absence of a positive OSM toll tag is not proof that every
-            # travelled way is free: this index is intentionally sparse and
-            # OSRM's canonical route does not expose all way tags.  Never
-            # infer 0 KRW from an empty candidate set.
+        raw_candidates = list(analysis.raw_candidates or analysis.gates)
+        logical_gates = list(analysis.gates)
+        if not raw_candidates:
             self.metrics["toll_free_unproven"] += 1
-            result = TollResult(
-                status="partial",
-                complete=False,
-                vehicle_class=request.vehicle_class,
-                total_toll_krw=None,
-                known_toll_krw=None,
-                journeys=[],
-                detected_toll_gates=[],
-                unknown_segments=1,
-                reason="toll_status_not_proven",
-                source_status="unavailable",
-                fetched_at=None,
+            diagnostics = self._failure(
+                diagnostics,
+                stage=TollStage.TOLL_CANDIDATES_FOUND,
+                code=TollFailureCode.NO_TOLL_CANDIDATES,
+            )
+            self._store_debug(route_id, diagnostics)
+            result = self._partial_result(
+                request=request,
                 route_id=route_id,
+                # Keep the existing public reason for clients while the
+                # diagnostics field carries the precise stage code.
+                reason="toll_status_not_proven",
+                detected_gates=[],
+                logical_gates=[],
+                diagnostics=diagnostics,
+            )
+            return TollResponse(status="partial", toll=result)
+
+        diagnostics = self._advance(
+            diagnostics,
+            TollStage.TOLL_CANDIDATES_FOUND,
+            raw_candidates=len(raw_candidates),
+        )
+        diagnostics = self._advance(
+            diagnostics,
+            TollStage.TOLLGATE_DEDUP_OK,
+            logical_gates=len(logical_gates),
+            duplicate_groups=analysis.duplicate_groups,
+        )
+        diagnostics = diagnostics.model_copy(
+            update={
+                "candidate_details": self._candidate_details(
+                    raw_candidates, route_distance_m=route_distance_m
+                )
+            }
+        )
+
+        # A route can legitimately contain both KEC-managed ways and a nearby
+        # private/operator-tagged way (parallel carriageway, connector, or a
+        # mixed corridor such as the Seoul-Busan route).  Do not reject that
+        # journey before asking the official source: the exact official
+        # entry/exit result and distance sanity check are the evidence that
+        # the public source covers the whole journey.  A private/unknown-only
+        # corridor still remains fail-safe and never becomes a guessed total.
+        private_only = analysis.unsupported_private_road and not analysis.supported_operator_evidence
+        if private_only or analysis.unknown_toll_operator:
+            self.metrics["private_toll_road"] += 1
+            diagnostics = self._failure(
+                diagnostics,
+                stage=TollStage.ENTRY_EXIT_RESOLUTION_OK,
+                code=TollFailureCode.PRIVATE_SEGMENT_UNRESOLVED,
+            )
+            diagnostics = diagnostics.model_copy(
+                update={
+                    "notes": [
+                        *diagnostics.notes,
+                        "entry/exit resolution stopped because a private or "
+                        "unresolved operator segment remains",
+                    ]
+                }
+            )
+            self._store_debug(route_id, diagnostics)
+            result = self._partial_result(
+                request=request,
+                route_id=route_id,
+                reason=(
+                    "unknown_toll_operator"
+                    if analysis.unknown_toll_operator and not analysis.unsupported_private_road
+                    else TollFailureCode.PRIVATE_SEGMENT_UNRESOLVED.value
+                ),
+                detected_gates=raw_candidates,
+                logical_gates=logical_gates,
+                diagnostics=diagnostics,
             )
             return TollResponse(status="partial", toll=result)
 
         if analysis.unsupported_private_road:
-            self.metrics["private_toll_road"] += 1
-            result = self._partial_result(
-                request=request,
-                route_id=route_id,
-                reason="unsupported_private_toll_segment",
-                detected_gates=analysis.gates,
+            diagnostics = diagnostics.model_copy(
+                update={
+                    "notes": [
+                        *diagnostics.notes,
+                        "mixed operator evidence detected; official full-journey "
+                        "result and distance are required before completion",
+                    ]
+                }
             )
-            return TollResponse(status="partial", toll=result)
 
-        if analysis.unknown_toll_operator:
-            self.metrics["unknown_toll_operator"] += 1
-            result = self._partial_result(
-                request=request,
-                route_id=route_id,
-                reason="unknown_toll_operator",
-                detected_gates=analysis.gates,
-            )
-            return TollResponse(status="partial", toll=result)
-
-        if len(analysis.gates) < 2:
+        candidate_pairs = self._entry_exit_candidates(analysis)
+        named_pair = candidate_pairs[0] if candidate_pairs else None
+        diagnostics = diagnostics.model_copy(
+            update={
+                "notes": [
+                    *diagnostics.notes,
+                    self._entry_exit_note(analysis, named_pair),
+                    f"official directional pair candidates={len(candidate_pairs)}",
+                ]
+            }
+        )
+        if not candidate_pairs or len(logical_gates) < 2:
             self.metrics["gate_match_failure"] += 1
+            named_count = sum(
+                1
+                for match in logical_gates
+                if match.gate.name and match.gate.name.strip()
+            )
+            code = (
+                TollFailureCode.AMBIGUOUS_TOLLGATE
+                if len(logical_gates) >= 2 and named_count >= 2
+                else TollFailureCode.ENTRY_EXIT_UNRESOLVED
+            )
+            diagnostics = self._failure(
+                diagnostics,
+                stage=TollStage.ENTRY_EXIT_RESOLUTION_OK,
+                code=code,
+            )
+            self._store_debug(route_id, diagnostics)
             result = self._partial_result(
                 request=request,
                 route_id=route_id,
-                reason="toll_entry_exit_not_identified",
-                detected_gates=analysis.gates,
+                reason=code.value,
+                detected_gates=raw_candidates,
+                logical_gates=logical_gates,
+                diagnostics=diagnostics,
             )
             return TollResponse(status="partial", toll=result)
 
-        named_pair = self._named_entry_exit(analysis)
-        if named_pair is None:
-            self.metrics["gate_name_failure"] += 1
-            result = self._partial_result(
-                request=request,
-                route_id=route_id,
-                reason="toll_entry_exit_names_ambiguous",
-                detected_gates=analysis.gates,
-            )
-            return TollResponse(status="partial", toll=result)
-
-        entry_match, exit_match = named_pair
+        entry_match, exit_match = candidate_pairs[0]
+        logical_with_roles, raw_with_roles = self._apply_candidate_roles(
+            logical_gates, raw_candidates, entry_match, exit_match
+        )
+        diagnostics = diagnostics.model_copy(
+            update={
+                "candidate_details": self._candidate_details(
+                    raw_with_roles, route_distance_m=route_distance_m
+                )
+            }
+        )
         entry_gate = entry_match.gate
         exit_gate = exit_match.gate
         entry_name = official_query_name(entry_gate.name)
         exit_name = official_query_name(exit_gate.name)
-        if not entry_name or not exit_name or normalize_toll_name(entry_name) == normalize_toll_name(exit_name):
+        if (
+            not entry_name
+            or not exit_name
+            or normalize_toll_name(entry_name) == normalize_toll_name(exit_name)
+        ):
             self.metrics["gate_name_failure"] += 1
+            diagnostics = self._failure(
+                diagnostics,
+                stage=TollStage.ENTRY_EXIT_RESOLUTION_OK,
+                code=TollFailureCode.ENTRY_EXIT_UNRESOLVED,
+            ).model_copy(
+                update={
+                    "entry_candidate_id": entry_gate.id,
+                    "exit_candidate_id": exit_gate.id,
+                }
+            )
+            self._store_debug(route_id, diagnostics)
             result = self._partial_result(
                 request=request,
                 route_id=route_id,
-                reason="toll_entry_exit_names_ambiguous",
-                detected_gates=analysis.gates,
+                reason=TollFailureCode.ENTRY_EXIT_UNRESOLVED.value,
+                detected_gates=raw_with_roles,
+                logical_gates=logical_with_roles,
+                diagnostics=diagnostics,
             )
             return TollResponse(status="partial", toll=result)
 
-        lookup, source_status, fetched_at, source_error = await self._lookup_with_cache(
-            entry_name, exit_name
+        diagnostics = self._advance(diagnostics, TollStage.ENTRY_EXIT_RESOLUTION_OK)
+        diagnostics = diagnostics.model_copy(
+            update={
+                "entry_candidate_id": entry_gate.id,
+                "exit_candidate_id": exit_gate.id,
+            }
         )
+
+        browser_client = getattr(self.crawler, "browser_client", None)
+        if browser_client is not None and hasattr(browser_client, "last_request_events"):
+            # Do not attach a previous request's network trace to a cache hit.
+            browser_client.last_request_events = []
+        lookup_entry_name = entry_gate.name or entry_name
+        lookup_exit_name = exit_gate.name or exit_name
+        (
+            lookup,
+            source_status,
+            fetched_at,
+            source_error,
+            lookup_origin,
+            resolved_entry_match,
+            resolved_exit_match,
+        ) = await self._lookup_with_cache(
+            lookup_entry_name,
+            lookup_exit_name,
+            entry_gate=entry_gate,
+            exit_gate=exit_gate,
+            candidate_pairs=candidate_pairs,
+        )
+        request_events = getattr(
+            browser_client, "last_request_events", []
+        )
+        if request_events:
+            diagnostics = diagnostics.model_copy(update={"request_events": request_events[-300:]})
+        station_count = getattr(browser_client, "last_station_directory_count", 0)
+        if station_count:
+            diagnostics = diagnostics.model_copy(
+                update={"official_station_count": int(station_count)}
+            )
         if lookup is None:
             self.metrics["official_lookup_failure"] += 1
+            code = self._source_failure_code(source_error)
+            diagnostics = self._failure(
+                diagnostics,
+                stage=self._source_failure_stage(code),
+                code=TollFailureCode(code),
+            ).model_copy(
+                update={"official_lookup": "failed"}
+            )
+            self._store_debug(route_id, diagnostics)
             result = self._partial_result(
                 request=request,
                 route_id=route_id,
-                reason=source_error or "official_toll_lookup_failed",
-                detected_gates=analysis.gates,
+                reason=code,
+                detected_gates=raw_with_roles,
+                logical_gates=logical_with_roles,
+                diagnostics=diagnostics,
             )
             return TollResponse(status="partial", toll=result)
 
-        if not self._official_pair_is_consistent(entry_name, exit_name, lookup):
+        if isinstance(resolved_entry_match, MatchedTollGate) and isinstance(
+            resolved_exit_match, MatchedTollGate
+        ):
+            entry_match = resolved_entry_match
+            exit_match = resolved_exit_match
+            logical_with_roles, raw_with_roles = self._apply_candidate_roles(
+                logical_gates, raw_candidates, entry_match, exit_match
+            )
+            diagnostics = diagnostics.model_copy(
+                update={
+                    "candidate_details": self._candidate_details(
+                        raw_with_roles, route_distance_m=route_distance_m
+                    ),
+                    "entry_candidate_id": entry_match.gate.id,
+                    "exit_candidate_id": exit_match.gate.id,
+                    "notes": [
+                        *diagnostics.notes,
+                        f"official path validation selected {entry_match.gate.name} -> "
+                        f"{exit_match.gate.name}",
+                    ],
+                }
+            )
+            entry_gate = entry_match.gate
+            exit_gate = exit_match.gate
+            entry_name = official_query_name(entry_gate.name)
+            exit_name = official_query_name(exit_gate.name)
+
+        entry_ref = self._station_reference(
+            lookup, entry=True, matched_osm_name=entry_gate.name or ""
+        )
+        exit_ref = self._station_reference(
+            lookup, entry=False, matched_osm_name=exit_gate.name or ""
+        )
+        diagnostics = diagnostics.model_copy(
+            update={
+                "official_lookup": "cache" if lookup_origin != "browser" else "success",
+                "official_entry": entry_ref,
+                "official_exit": exit_ref,
+            }
+        )
+        # BrowserTollClient only returns a parsed lookup after the station
+        # directory and canonical IDs have both succeeded.  HTTP test/fallback
+        # adapters may not expose IDs, so the stage is still recorded from the
+        # verified route names in that compatibility path.
+        diagnostics = self._advance(diagnostics, TollStage.OFFICIAL_STATION_MATCH_OK)
+        diagnostics = self._advance(diagnostics, TollStage.OFFICIAL_PAGE_REQUEST_OK)
+        diagnostics = self._advance(diagnostics, TollStage.OFFICIAL_RESULT_PARSE_OK)
+
+        expected_official_entry = (
+            entry_ref.official_name if entry_ref is not None else entry_name
+        )
+        expected_official_exit = (
+            exit_ref.official_name if exit_ref is not None else exit_name
+        )
+        if not self._official_pair_is_consistent(
+            expected_official_entry,
+            expected_official_exit,
+            lookup,
+        ):
             self.metrics["official_pair_mismatch"] += 1
+            diagnostics = self._failure(
+                diagnostics,
+                stage=TollStage.OFFICIAL_RESULT_PARSE_OK,
+                code=TollFailureCode.TOLL_ROUTE_MISMATCH,
+            )
+            self._store_debug(route_id, diagnostics)
             result = self._partial_result(
                 request=request,
                 route_id=route_id,
-                reason="TOLL_ROUTE_MISMATCH",
-                detected_gates=analysis.gates,
+                reason=TollFailureCode.TOLL_ROUTE_MISMATCH.value,
+                detected_gates=raw_with_roles,
+                logical_gates=logical_with_roles,
+                diagnostics=diagnostics,
             )
             return TollResponse(status="partial", toll=result)
 
         if not self._distance_is_consistent(request.route.distance_m, lookup):
             self.metrics["official_distance_mismatch"] += 1
+            diagnostics = self._failure(
+                diagnostics,
+                stage=TollStage.OFFICIAL_RESULT_PARSE_OK,
+                code=TollFailureCode.TOLL_ROUTE_MISMATCH,
+            )
+            self._store_debug(route_id, diagnostics)
             result = self._partial_result(
                 request=request,
                 route_id=route_id,
-                reason="TOLL_ROUTE_MISMATCH",
-                detected_gates=analysis.gates,
+                reason=TollFailureCode.TOLL_ROUTE_MISMATCH.value,
+                detected_gates=raw_with_roles,
+                logical_gates=logical_with_roles,
+                diagnostics=diagnostics,
             )
             return TollResponse(status="partial", toll=result)
 
@@ -362,14 +990,25 @@ class TollCalculator:
             amount = lookup.prices[request.vehicle_class]
         except KeyError:
             self.metrics["vehicle_price_missing"] += 1
+            diagnostics = self._failure(
+                diagnostics,
+                stage=TollStage.VEHICLE_PRICE_FOUND,
+                code=TollFailureCode.PRICE_NOT_FOUND,
+            )
+            self._store_debug(route_id, diagnostics)
             result = self._partial_result(
                 request=request,
                 route_id=route_id,
-                reason="official_vehicle_class_price_missing",
-                detected_gates=analysis.gates,
+                reason=TollFailureCode.PRICE_NOT_FOUND.value,
+                detected_gates=raw_with_roles,
+                logical_gates=logical_with_roles,
+                diagnostics=diagnostics,
             )
             return TollResponse(status="partial", toll=result)
 
+        diagnostics = self._advance(diagnostics, TollStage.VEHICLE_PRICE_FOUND)
+        diagnostics = self._advance(diagnostics, TollStage.TOLL_COMPLETE)
+        self._store_debug(route_id, diagnostics)
         journey = TollJourney(
             entry=entry_gate,
             exit=exit_gate,
@@ -380,6 +1019,8 @@ class TollCalculator:
             confidence="verified",
             source_status=source_status,
             fetched_at=fetched_at,
+            official_entry_id=lookup.entry_official_id,
+            official_exit_id=lookup.exit_official_id,
         )
         result = TollResult(
             status="ok",
@@ -388,11 +1029,13 @@ class TollCalculator:
             total_toll_krw=amount,
             known_toll_krw=amount,
             journeys=[journey],
-            detected_toll_gates=analysis.gates,
+            detected_toll_gates=raw_with_roles,
+            logical_toll_gates=logical_with_roles,
             unknown_segments=0,
             reason="official_web_verified" if source_status == "fresh" else "official_web_stale_cache",
             source_status=source_status,
             fetched_at=fetched_at,
             route_id=route_id,
+            diagnostics=diagnostics,
         )
         return TollResponse(status="ok", toll=result)

@@ -459,6 +459,152 @@ h1 {
   width: 100%;
 }
 
+.fuel-panel {
+  border-top: 1px solid #d9e6e9;
+  margin-top: 13px;
+  padding-top: 12px;
+}
+
+.fuel-panel-heading,
+.driving-cost-heading {
+  align-items: baseline;
+  display: flex;
+  justify-content: space-between;
+}
+
+.fuel-panel-heading h2,
+.driving-cost-heading h3 {
+  font-size: 0.91rem;
+  margin: 0;
+}
+
+.fuel-inputs {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 1.25fr;
+  margin-top: 10px;
+}
+
+.fuel-input-group label {
+  color: var(--muted);
+  display: block;
+  font-size: 0.66rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.fuel-input-group select,
+.fuel-efficiency-input input {
+  background: #ffffff;
+  border: 1px solid #b8cbd2;
+  border-radius: 6px;
+  color: var(--ink);
+  font-size: 0.73rem;
+  min-height: 31px;
+  padding: 6px 7px;
+  width: 100%;
+}
+
+.fuel-efficiency-input {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+}
+
+.fuel-efficiency-input input {
+  min-width: 0;
+}
+
+.fuel-efficiency-input span {
+  color: var(--muted);
+  font-size: 0.66rem;
+  white-space: nowrap;
+}
+
+.input-help {
+  color: var(--muted);
+  font-size: 0.61rem;
+  line-height: 1.35;
+  margin: 4px 0 0;
+}
+
+.button--cost {
+  background: #286b67;
+  color: #ffffff;
+  margin-top: 11px;
+  width: 100%;
+}
+
+.button--cost:hover:not(:disabled) {
+  background: #1f5552;
+}
+
+.fuel-metrics,
+.driving-cost-metrics {
+  border-top: 1px solid #d9e6e9;
+  display: grid;
+  gap: 7px;
+  grid-template-columns: 1fr 1fr;
+  margin: 11px 0 0;
+  padding-top: 9px;
+}
+
+.fuel-metrics dt,
+.driving-cost-metrics dt {
+  color: var(--muted);
+  font-size: 0.63rem;
+  margin-bottom: 2px;
+}
+
+.fuel-metrics dd,
+.driving-cost-metrics dd {
+  color: var(--ink);
+  font-size: 0.85rem;
+  font-weight: 800;
+  margin: 0;
+}
+
+.fuel-status,
+.driving-cost-status {
+  color: var(--muted);
+  font-size: 0.71rem;
+  line-height: 1.45;
+  margin: 7px 0 0;
+}
+
+.fuel-price-source {
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.4;
+  margin: 7px 0 0;
+}
+
+.fuel-status--error,
+.driving-cost-status--error {
+  color: var(--error);
+}
+
+.fuel-status--success,
+.driving-cost-status--success {
+  color: var(--success);
+}
+
+.driving-cost-panel {
+  border-top: 1px dashed #c9dadd;
+  margin-top: 12px;
+  padding-top: 10px;
+}
+
+.driving-cost-metrics .cost-total-row {
+  border-top: 1px solid #cfe0e2;
+  padding-top: 6px;
+}
+
+.driving-cost-metrics .cost-total-row dd {
+  color: #1d5e5b;
+  font-size: 0.94rem;
+}
+
 .toll-panel {
   border-top: 1px solid #d9e6e9;
   margin-top: 13px;
@@ -537,6 +683,25 @@ h1 {
 
 .toll-status--success {
   color: var(--success);
+}
+
+.toll-debug {
+  border-top: 1px dashed #d9cba9;
+  color: var(--muted);
+  font-size: 0.64rem;
+  margin-top: 9px;
+  padding-top: 7px;
+}
+
+.toll-debug summary {
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.toll-debug pre {
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
 }
 
 .selection-status-block {

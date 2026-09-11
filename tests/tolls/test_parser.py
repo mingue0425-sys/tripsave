@@ -21,6 +21,25 @@ HTML_FRAGMENT = """
 </div>
 """
 
+CURRENT_ROUTE_LIST_FRAGMENT = """
+<div id="routeList">
+  <div class="manage_list">
+    <table>
+      <tr><th>구분</th><th>1종</th><th>2종</th><th>3종</th><th>4종</th><th>5종</th><th>경차</th></tr>
+      <tr><td>서울~중간</td><td>1,000원</td><td>1,100원</td><td>1,200원</td><td>1,300원</td><td>1,400원</td><td>500원</td></tr>
+    </table>
+    <table><tr><td>총거리</td><td>100.0Km</td></tr><tr><td>경로</td><td>서울 중간</td></tr></table>
+  </div>
+  <div class="manage_list">
+    <table>
+      <tr><th>구분</th><th>1종</th><th>2종</th><th>3종</th><th>4종</th><th>5종</th><th>경차</th></tr>
+      <tr><td>서울~부산</td><td>18,600원</td><td>19,000원</td><td>19,700원</td><td>26,100원</td><td>30,700원</td><td>9,300원</td></tr>
+    </table>
+    <table><tr><td>총거리</td><td>385.8Km</td></tr><tr><td>경로</td><td>서울 부산</td></tr></table>
+  </div>
+</div>
+"""
+
 
 def test_official_parser_normalizes_all_vehicle_prices() -> None:
     result = parse_official_toll_html(
@@ -36,6 +55,19 @@ def test_official_parser_normalizes_all_vehicle_prices() -> None:
     assert result.prices[TollVehicleClass.CLASS_5] == 30_700
     assert result.prices[TollVehicleClass.COMPACT] == 9_300
     assert result.raw_evidence_hash and len(result.raw_evidence_hash) == 64
+
+
+def test_parser_keeps_selected_route_block_distance_and_stops() -> None:
+    result = parse_official_toll_html(
+        CURRENT_ROUTE_LIST_FRAGMENT,
+        requested_entry="서울",
+        requested_exit="부산",
+    )
+
+    assert result.route_label == "서울~부산"
+    assert result.distance_km == 385.8
+    assert result.route_stops == ["서울", "부산"]
+    assert result.prices[TollVehicleClass.CLASS_1] == 18_600
 
 
 @pytest.mark.parametrize(

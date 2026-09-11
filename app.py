@@ -1,4 +1,4 @@
-"""FastAPI entry point for Korea Trip Optimizer V0.4."""
+"""FastAPI entry point for Korea Trip Optimizer V0.5."""
 
 import logging
 
@@ -11,18 +11,30 @@ from fastapi.templating import Jinja2Templates
 
 from config import (
     APP_VERSION,
+    DRIVING_COST_API_URL,
+    FUEL_API_URL,
+    FUEL_STATUS_URL,
     OSRM_BASE_URL,
     OSRM_CONNECT_TIMEOUT_S,
     OSRM_REQUEST_TIMEOUT_S,
     ROUTE_API_URL,
     STATIC_DIR,
     TOLL_API_URL,
+    TOLL_DEBUG_MODE,
     TOLL_INDEX_DB,
     TOLL_STATUS_URL,
     TEMPLATES_DIR,
     map_config,
 )
 from backend.places import search_places
+from backend.fuel.errors import FuelServiceError
+from backend.fuel.models import (
+    DrivingCostRequest,
+    DrivingCostResponse,
+    FuelCalculationRequest,
+    FuelResponse,
+)
+from backend.fuel.service import DrivingCostService, FuelPriceService, make_fuel_response
 from backend.routing.errors import (
     InvalidRouteInputError,
     NoRouteError,
@@ -49,6 +61,12 @@ routing_client = OSRMClient(
     connect_timeout_s=OSRM_CONNECT_TIMEOUT_S,
 )
 toll_calculator = TollCalculator(index_path=TOLL_INDEX_DB)
+fuel_price_service = FuelPriceService(database_path=TOLL_INDEX_DB)
+driving_cost_service = DrivingCostService(
+    toll_calculator=toll_calculator,
+    fuel_service=fuel_price_service,
+    routing_client=routing_client,
+)
 
 # StaticFiles performs safe path handling. Basemap tiles are intentionally
 # fetched from the configured OpenFreeMap provider during development; this
@@ -81,6 +99,17 @@ async def request_validation_handler(
                 "error": {
                     "code": "INVALID_REQUEST",
                     "message": "통행료 계산 요청이 유효하지 않습니다.",
+                },
+            },
+        )
+    if request.url.path in {FUEL_API_URL, DRIVING_COST_API_URL}:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "status": "error",
+                "error": {
+                    "code": "INVALID_REQUEST",
+                    "message": "유류비 계산 요청이 유효하지 않습니다.",
                 },
             },
         )
@@ -207,3 +236,66 @@ async def calculate_tolls(
         if error.http_status >= 500:
             LOGGER.warning("Toll calculation service failure: %s", error)
         return toll_error_response(error)
+
+
+def fuel_error_response(error: FuelServiceError) -> JSONResponse:
+    return JSONResponse(
+        status_code=error.http_status,
+        content={
+            "status": "error",
+            "error": {"code": error.code, "message": error.message},
+        },
+    )
+
+
+@app.get(FUEL_STATUS_URL)
+async def fuel_status() -> JSONResponse:
+    """Report the public fuel source and local cache policy."""
+
+    return JSONResponse(status_code=200, content=await fuel_price_service.status())
+
+
+@app.post(FUEL_API_URL, response_model=FuelResponse, response_model_exclude_none=True)
+async def calculate_fuel(
+    request: FuelCalculationRequest,
+) -> FuelResponse | JSONResponse:
+    """Calculate fuel cost from the already calculated canonical route."""
+
+    try:
+        result = await fuel_price_service.calculate(request)
+        return make_fuel_response(result)
+    except FuelServiceError as error:
+        return fuel_error_response(error)
+
+
+@app.post(
+    DRIVING_COST_API_URL,
+    response_model=DrivingCostResponse,
+    response_model_exclude_none=True,
+)
+async def calculate_driving_cost(
+    request: DrivingCostRequest,
+) -> DrivingCostResponse | JSONResponse:
+    """Return route-bound toll, fuel, and one-way/return driving costs."""
+
+    try:
+        return await driving_cost_service.calculate(request)
+    except FuelServiceError as error:
+        return fuel_error_response(error)
+    except TollServiceError as error:
+        return toll_error_response(error)
+
+
+@app.get("/api/tolls/debug/{route_id}")
+async def toll_debug(route_id: str) -> JSONResponse:
+    """Return the latest stage evidence for a route in development mode."""
+
+    if not TOLL_DEBUG_MODE:
+        return JSONResponse(status_code=404, content={"status": "not_found"})
+    value = toll_calculator.debug(route_id)
+    if value is None:
+        return JSONResponse(
+            status_code=404,
+            content={"status": "not_found", "message": "No toll diagnostic for route."},
+        )
+    return JSONResponse(status_code=200, content={"status": "ok", **value})

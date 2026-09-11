@@ -10,12 +10,15 @@ TEMPLATES_DIR = PROJECT_ROOT / "templates"
 STATIC_DIR = PROJECT_ROOT / "static"
 PLACES_DATA_FILE = STATIC_DIR / "data" / "places.json"
 
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
 PLACES_SEARCH_URL = "/api/places/search"
 ROUTE_API_URL = "/api/routes"
 ROUTING_STATUS_URL = "/api/routing/status"
 TOLL_STATUS_URL = "/api/tolls/status"
 TOLL_API_URL = "/api/tolls/calculate"
+FUEL_API_URL = "/api/fuel/calculate"
+FUEL_STATUS_URL = "/api/fuel/status"
+DRIVING_COST_API_URL = "/api/costs/driving"
 
 LOCAL_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "::1"})
 OSRM_BASE_URL = os.getenv("KTO_OSRM_BASE_URL", "http://127.0.0.1:5000").rstrip("/")
@@ -56,6 +59,59 @@ TOLL_ROAD_MATCH_THRESHOLD_M = 100.0
 TOLL_MAX_PRICE_KRW = 10_000_000
 TOLL_MAX_OFFICIAL_DISTANCE_MISMATCH_M = 50_000.0
 TOLL_MAX_OFFICIAL_DISTANCE_MISMATCH_RATIO = 0.35
+
+# Opinet's public HTML statistics are the only V0.5 fuel-price source.  The
+# two pages are separate because gasoline/diesel and automotive LPG are
+# published by different public result views.
+FUEL_LIQUID_PRICE_URL = "https://www.opinet.co.kr/user/dopospdrg/dopOsPdrgSelect.do"
+FUEL_LPG_PRICE_URL = "https://www.opinet.co.kr/user/dopvsavsel/dopVsAvselSelect.do"
+OPINET_HOSTNAME = "www.opinet.co.kr"
+FUEL_CACHE_TTL_S = float(os.getenv("KTO_FUEL_CACHE_TTL_S", "10800"))
+FUEL_REQUEST_INTERVAL_S = float(os.getenv("KTO_FUEL_REQUEST_INTERVAL_S", "2.0"))
+FUEL_BROWSER_NAVIGATION_TIMEOUT_S = float(
+    os.getenv("KTO_FUEL_BROWSER_NAVIGATION_TIMEOUT_S", "30")
+)
+FUEL_BROWSER_SELECTOR_TIMEOUT_S = float(
+    os.getenv("KTO_FUEL_BROWSER_SELECTOR_TIMEOUT_S", "15")
+)
+FUEL_BROWSER_RESULT_TIMEOUT_S = float(
+    os.getenv("KTO_FUEL_BROWSER_RESULT_TIMEOUT_S", "30")
+)
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+FUEL_BROWSER_HEADLESS = _env_bool("KTO_FUEL_BROWSER_HEADLESS", True)
+FUEL_BROWSER_ARTIFACT_DIR = (
+    Path(
+        os.getenv(
+            "KTO_FUEL_DEBUG_ARTIFACT_DIR",
+            str(PROJECT_ROOT / "artifacts" / "fuel-debug"),
+        )
+    )
+    if _env_bool("KTO_FUEL_DEBUG_ARTIFACTS", False)
+    else None
+)
+
+
+# The browser source is deliberately the production default.  These separate
+# timeouts distinguish navigation, DOM readiness, and the result submission so
+# a slow official page is diagnosable without allowing an infinite wait.
+TOLL_BROWSER_NAVIGATION_TIMEOUT_S = float(os.getenv("KTO_TOLL_BROWSER_NAVIGATION_TIMEOUT_S", "30"))
+TOLL_BROWSER_SELECTOR_TIMEOUT_S = float(os.getenv("KTO_TOLL_BROWSER_SELECTOR_TIMEOUT_S", "15"))
+TOLL_BROWSER_RESULT_TIMEOUT_S = float(os.getenv("KTO_TOLL_BROWSER_RESULT_TIMEOUT_S", "30"))
+TOLL_BROWSER_HEADLESS = _env_bool("KTO_TOLL_BROWSER_HEADLESS", True)
+TOLL_DEBUG_MODE = _env_bool("KTO_DEBUG", False)
+TOLL_BROWSER_ARTIFACT_DIR = (
+    Path(os.getenv("KTO_TOLL_DEBUG_ARTIFACT_DIR", str(PROJECT_ROOT / "artifacts" / "toll-debug")))
+    if _env_bool("KTO_TOLL_DEBUG_ARTIFACTS", False)
+    else None
+)
 
 
 def validate_official_toll_url(value: str) -> str:
@@ -124,5 +180,9 @@ def map_config() -> dict[str, object]:
         "routingStatusUrl": ROUTING_STATUS_URL,
         "tollStatusUrl": TOLL_STATUS_URL,
         "tollApiUrl": TOLL_API_URL,
+        "fuelApiUrl": FUEL_API_URL,
+        "fuelStatusUrl": FUEL_STATUS_URL,
+        "drivingCostApiUrl": DRIVING_COST_API_URL,
         "selectionStorageKey": "koreaTrip.selection.v1",
+        "debug": TOLL_DEBUG_MODE,
     }

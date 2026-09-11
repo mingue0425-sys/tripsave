@@ -11,8 +11,9 @@ from backend.tolls.models import (
     TollCalculationRequest,
     TollGate,
     TollVehicleClass,
+    TollStage,
 )
-from backend.tolls.official import OfficialTollLookup
+from backend.tolls.official import OfficialTollLookup, OfficialTollStationNotFoundError
 from backend.tolls.service import TollCalculator
 
 
@@ -36,6 +37,20 @@ class FakeCrawler:
     async def lookup(self, entry_name: str, exit_name: str) -> OfficialTollLookup:
         self.calls += 1
         return self.lookup_value
+
+
+class DirectionalFakeCrawler(FakeCrawler):
+    async def lookup(self, entry_name: str, exit_name: str) -> OfficialTollLookup:
+        self.calls += 1
+        if entry_name == "하남":
+            raise OfficialTollStationNotFoundError("하남 is not a valid directional entry")
+        return self.lookup_value.model_copy(
+            update={
+                "entry_name": entry_name,
+                "exit_name": exit_name,
+                "route_label": f"{entry_name}~{exit_name}",
+            }
+        )
 
 
 def request() -> TollCalculationRequest:
@@ -130,6 +145,14 @@ def test_service_uses_authoritative_pair_total_and_cache(tmp_path) -> None:
     assert len(first.toll.journeys) == 1
     assert second.toll.total_toll_krw == 500
     assert crawler.calls == 1
+    assert first.toll.diagnostics.stage is TollStage.TOLL_COMPLETE
+    assert first.toll.diagnostics.failure_stage is None
+    assert first.toll.diagnostics.raw_candidates == 2
+    assert first.toll.diagnostics.logical_gates == 2
+    assert [gate.candidate_role for gate in first.toll.detected_toll_gates] == [
+        "entry",
+        "exit",
+    ]
 
 
 def test_service_marks_unknown_operator_partial_instead_of_free(tmp_path) -> None:
@@ -144,6 +167,55 @@ def test_service_marks_unknown_operator_partial_instead_of_free(tmp_path) -> Non
     assert result.toll.complete is False
     assert result.toll.total_toll_krw is None
     assert result.toll.reason == "unknown_toll_operator"
+    assert result.toll.diagnostics.failure_code == "PRIVATE_SEGMENT_UNRESOLVED"
+    assert result.toll.diagnostics.failure_stage == TollStage.ENTRY_EXIT_RESOLUTION_OK
+
+
+def test_service_allows_mixed_corridor_only_after_official_result(tmp_path) -> None:
+    analysis = supported_analysis().model_copy(
+        update={
+            "supported_operator_evidence": True,
+            "unsupported_private_road": True,
+        }
+    )
+    crawler = FakeCrawler(lookup())
+    calculator = TollCalculator(
+        index_path=tmp_path / "unused.db",
+        cache=TollRateCache(tmp_path / "cache.db", ttl_days=30),
+        crawler=crawler,
+    )
+    calculator.index = FakeIndex(analysis)
+
+    result = asyncio.run(calculator.calculate(request()))
+
+    assert result.status == "ok"
+    assert result.toll.complete is True
+    assert result.toll.total_toll_krw == 500
+    assert any("mixed operator evidence" in note for note in result.toll.diagnostics.notes)
+
+
+def test_service_tries_next_official_directional_pair(tmp_path) -> None:
+    analysis = supported_analysis().model_copy(
+        update={
+            "gates": [gate(1, "하남", 127.02), gate(2, "동서울", 127.05), gate(3, "대동", 127.08)]
+        }
+    )
+    crawler = DirectionalFakeCrawler(lookup())
+    calculator = TollCalculator(
+        index_path=tmp_path / "unused.db",
+        cache=TollRateCache(tmp_path / "cache.db", ttl_days=30),
+        crawler=crawler,
+    )
+    calculator.index = FakeIndex(analysis)
+
+    result = asyncio.run(calculator.calculate(request()))
+
+    assert result.status == "ok"
+    assert result.toll.complete is True
+    assert crawler.calls == 2
+    assert result.toll.journeys[0].entry.name == "동서울"
+    assert result.toll.journeys[0].exit.name == "대동"
+    assert any("official path validation selected 동서울 -> 대동" in note for note in result.toll.diagnostics.notes)
 
 
 def test_service_does_not_infer_free_from_empty_sparse_index(tmp_path) -> None:

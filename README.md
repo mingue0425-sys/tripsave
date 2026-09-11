@@ -1,4 +1,4 @@
-# Korea Trip Optimizer V0.4
+# Korea Trip Optimizer V0.5
 
 Korea Trip Optimizer V0.3 uses MapLibre GL JS with the OpenFreeMap Liberty
 vector basemap. The previous hand-authored GeoJSON preview is no longer a
@@ -8,9 +8,11 @@ style can be swapped in without changing marker, selection, or route logic.
 
 V0.3 adds a real car route through a local OSRM instance prepared from a South
 Korea OpenStreetMap PBF. V0.4 adds a local OSM toll-gate index and a
-server-side adapter for the official Korea Expressway toll inquiry page. The
-browser calls FastAPI; it never calls OSRM, a toll API, or a public routing API
-directly.
+server-side adapter for the official Korea Expressway toll inquiry page. V0.5
+adds route-bound fuel cost calculation for gasoline, diesel, and LPG using the
+user's actual efficiency and the current national-average price shown by
+Opinet's public HTML pages. The browser calls FastAPI; it never calls OSRM, a
+toll API, a fuel API, or a public routing API directly.
 
 During development, the browser requests only the configured OpenFreeMap
 basemap resources externally. There are no Google, Kakao, Naver, Mapbox,
@@ -21,8 +23,8 @@ CDN dependencies.
 
 - Python 3.11 or newer
 - A modern browser with WebGL support
-- Internet access while using the OpenFreeMap development basemap and the
-  official HTML toll inquiry source
+- Internet access while using the OpenFreeMap development basemap, the
+  official HTML toll inquiry source, and the official Opinet HTML price source
 - A local OSRM runtime and prepared South Korea routing data for route tests
 
 MapLibre GL JS 4.7.1 is vendored under `static/vendor/`; Node.js is not needed
@@ -36,6 +38,7 @@ macOS/Linux:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
+python -m playwright install chromium
 ```
 
 Windows PowerShell:
@@ -144,7 +147,8 @@ python scripts/verify_offline.py
 The fast Python tests cover the server regression endpoints, local search,
 canonical routing models, mocked OSRM failures, provider configuration,
 retired preview removal, fixed static-file safety, toll models, matching,
-parser, cache, and API behavior. The integration suite
+toll parser/cache/API behavior, fuel models, fuel arithmetic, Opinet parser,
+fuel cache, source fallback, driving-cost aggregation, and API behavior. The integration suite
 requires a running local OSRM and can be run without the live official source
 with:
 
@@ -152,12 +156,30 @@ with:
 python -m pytest -q -m "integration and not official"
 ```
 
-The live official HTML adapter test is separately marked and requires network
-access to the fixed [한국도로공사 통행요금조회 페이지](https://www.ex.co.kr/portal/usefee/selectUseFeeNList.do):
+The marked V0.5 representative integration covers 서울→부산, 서울→대전,
+부산→대구, 강릉→서울, and 대전→광주 with the live route, toll, and public
+fuel-price services:
 
 ```bash
+python -m pytest -q tests/fuel/test_cost_integration.py -m "integration and official"
+```
+
+The live official HTML adapter tests are separately marked and require network
+access to the fixed [한국도로공사 통행요금조회 페이지](https://www.ex.co.kr/portal/usefee/selectUseFeeNList.do)
+and the [Opinet 제품별 평균공급가격 페이지](https://www.opinet.co.kr/user/dopospdrg/dopOsPdrgSelect.do):
+
+```bash
+python -m playwright install chromium
 python -m pytest -q -m official
 ```
+
+The official adapter is browser-first. It loads the public station popup,
+collects the canonical station dictionary, validates the selected names with
+the page's normal station-check flow, submits the HTML form, and parses the
+resulting route table. The returned `nosunCd` station IDs are stored with the
+price cache; raw OSM gate names are not used as the cache identity. Set
+`KTO_TOLL_BROWSER_EXECUTABLE_PATH` only when a deployment needs to point
+Playwright at an already installed Chromium binary.
 
 The Node tests cover localStorage save/restore, malformed payload handling,
 coordinate validation, the 20-metre guard, and route metric formatting. Run
@@ -165,6 +187,7 @@ the V0.4 JavaScript syntax checks with:
 
 ```powershell
 node --check static/js/toll.js
+node --check static/js/cost.js
 node --check static/js/toll_markers.js
 node --check static/js/route.js
 ```
@@ -190,6 +213,22 @@ The V0.4 route/toll lifecycle smoke test uses the same setup and is run with:
 node scripts\toll_browser_smoke.js
 ```
 
+The V0.5 driving-cost Chromium E2E uses the installed Python Playwright
+package and verifies an actual Seoul→Daejeon route, official gasoline and
+diesel prices, fuel-efficiency-only recalculation, fuel-type invalidation,
+route invalidation, toll-panel synchronization, network allowlisting, and
+console errors:
+
+```bash
+KTO_CHROME_PATH="/path/to/Google Chrome for Testing" \
+  python scripts/cost_browser_smoke.py
+```
+
+On this workspace the same executable can be supplied to the server-side
+fuel/toll browser clients with `KTO_FUEL_BROWSER_EXECUTABLE_PATH` and
+`KTO_TOLL_BROWSER_EXECUTABLE_PATH` when the default Playwright browser path is
+not installed.
+
 The browser test records every request, verifies that only the local app and
 configured basemap hosts are contacted, checks attribution and OpenMapTiles
 source layers, visits twelve Korean regions, exercises selection and reload,
@@ -201,11 +240,13 @@ stale-state protection.
 ## Network audit
 
 `python scripts/verify_offline.py` is now an allowlist audit rather than a
-zero-network check. `tiles.openfreemap.org` is the only approved external
-basemap host. The browser audit must still report zero requests to commercial
-map providers, public OSM tile servers, public routing services, geocoders,
-analytics, or telemetry. The browser route request is relative FastAPI; the
-FastAPI-to-OSRM request stays on loopback.
+zero-network check. The browser-side map host remains `tiles.openfreemap.org`;
+the server-side V0.4/V0.5 source adapters additionally allow only the fixed
+official Korea Expressway and Opinet HTML hosts. The browser audit must still
+report zero requests to commercial map providers, public OSM tile servers,
+public routing services, geocoders, analytics, or telemetry. The browser route
+and cost requests are relative FastAPI; the FastAPI-to-OSRM request stays on
+loopback.
 
 ## Future self-hosted basemap
 
@@ -307,30 +348,46 @@ The toll endpoints are:
 ```text
 GET  /api/tolls/status
 POST /api/tolls/calculate
+GET  /api/tolls/debug/{route_id}  (only when KTO_DEBUG=1)
 ```
 
 The backend matches the canonical OSRM route against local OSM evidence and,
-when the journey is supported, submits the normal public HTML form to the
+when the journey is supported, uses Playwright to submit the normal public
+HTML form to the
 [한국도로공사 통행요금조회 페이지](https://www.ex.co.kr/portal/usefee/selectUseFeeNList.do).
 It uses the official entry/exit result as the journey total; it never sums
-individual gate prices. The source adapter uses a bounded timeout, a 30-day
-SQLite cache, and a 1.5-second interval between requests. It does not call the
-page's internal AJAX helper, any OpenAPI endpoint, or an alternative public
-service.
+individual gate prices. The source adapter uses bounded navigation/selector/
+result timeouts, a low-concurrency lock, and a 30-day SQLite cache. Station
+matching and browser request/response evidence are retained in development
+diagnostics; optional screenshots and a result HTML fragment are written only
+when `KTO_TOLL_DEBUG_ARTIFACTS=1`. It does not use an OpenAPI endpoint, a
+private API, or an alternative public service.
 
-The supported authoritative operator in V0.4 is 한국도로공사. If a route
-contains an unsupported private toll road, an unknown operator, an ambiguous
-gate match, or a parser/source failure, the API returns `complete: false` and
-does not turn the unknown amount into `0원`. The current sparse index does not
-treat an empty candidate set as proof of a free route; it returns an incomplete
-result until free-road coverage is explicitly verified. Vehicle classes are
-`class_1`, `compact`, `class_2`, `class_3`, `class_4`, and `class_5`.
+The supported authoritative operator in V0.4 is 한국도로공사. A mixed corridor
+is not rejected merely because an adjacent or connected OSM way has another
+operator: the official directional result and its distance must validate the
+whole journey. A private/unknown-only corridor, an ambiguous gate match, or a
+parser/source failure returns `complete: false` and never turns the unknown
+amount into `0원`. The current sparse index does not treat an empty candidate
+set as proof of a free route; it returns an incomplete result until free-road
+coverage is explicitly verified. Vehicle classes are `class_1`, `compact`,
+`class_2`, `class_3`, `class_4`, and `class_5`.
 
 The UI displays detected OSM gate candidates as `TG` markers and keeps route,
 toll, and selection lifecycles separate. Changing the route or vehicle class
 invalidates the toll result. Toll results are not stored in localStorage;
 origin/destination locations are stored and the toll is recalculated after a
 reload.
+
+Development diagnostics distinguish route success, raw candidate discovery,
+logical gate deduplication, route-progress entry/exit candidates, official
+directional station validation, page request, parsing, vehicle-price
+extraction, and completion. The first/last named OSM features are only
+candidates; exit-only or branch facilities are rejected by the official
+station check before the valid pair is selected. The debug panel reports raw
+candidate count separately from logical tollgate count and includes each
+candidate's OSM identity, tags, route position, duplicate group, and role. An
+incomplete result never turns an unknown amount into `0원`.
 
 ## Route behavior and limitations
 
@@ -339,16 +396,112 @@ The route is rendered in its own MapLibre source/layer and the viewport fits
 the route. Changing either location, swapping A/B, or clearing the selection
 removes the stale route; route geometry is not persisted in localStorage.
 
-V0.4 does not implement fuel costs, accommodation, restaurants,
-attractions, reviews, recommendations, itineraries, multi-stop routing,
-traffic-aware routing, public transit, walking, or cycling. Local search is
-still limited to the bundled city dataset.
+## Fuel Cost Calculation
 
-## V0.4 boundaries
+V0.5 calculates fuel cost from the canonical local-OSRM route distance, the
+user's entered **actual efficiency**, and a verified public-web price. The
+supported internal fuel enum and Korean UI labels are:
 
-This version does not implement fuel prices, recommendations, or a nationwide
-geocoder. Toll collection is limited to the fixed official HTML source and the
-local OSM evidence described above. The development basemap may request
-resources from the explicitly configured OpenFreeMap host; route computation
-is local-only. The official toll webpage may change its HTML or access policy;
-such failures are surfaced as incomplete results rather than guessed prices.
+```text
+gasoline → 휘발유
+diesel   → 경유
+lpg      → LPG
+```
+
+Electric vehicles are intentionally outside V0.5. The efficiency field is
+required for a fuel calculation and is validated on both sides of the API:
+finite numeric values from `0.1` through `100` km/L are accepted. There is no
+hidden default efficiency and no vehicle-efficiency database.
+
+### Fuel Price Source
+
+The source of truth is the public HTML rendered by the official [Opinet 제품별
+평균공급가격 페이지](https://www.opinet.co.kr/user/dopospdrg/dopOsPdrgSelect.do)
+for 보통휘발유 and 자동차용경유, and the official [Opinet 자동차충전소 평균
+판매가격 페이지](https://www.opinet.co.kr/user/dopvsavsel/dopVsAvselSelect.do)
+for 자동차부탄. The adapter first uses the verified server-rendered HTML GET
+and falls back to a Playwright client that reads the same visible result DOM.
+It does not use Opinet OpenAPI, a private endpoint, an API key, or a guessed
+request parameter.
+
+The parser matches semantic product labels (`보통휘발유`, `자동차용경유`,
+`자동차부탄`), selects the latest dated row, verifies the displayed `원/리터`
+or `원/ℓ` unit, and normalizes all three supported fuels to the internal
+`krw_per_l` unit. Missing fields, changed HTML, denied access, timeout, and
+unsupported units are explicit failures.
+
+### Fuel Price Cache
+
+Prices are stored in the existing SQLite database in `fuel_prices_cache`, keyed
+by fuel type, scope, region, and normalized unit. The default TTL is three
+hours (`KTO_FUEL_CACHE_TTL_S`); a cache hit avoids another public-web request.
+If the source is temporarily unavailable, an expired verified row may be used
+with `source_status: "stale"` and the UI says **최근 확인 가격 사용**. No
+unavailable price is written or returned as zero. The cache also records the
+observed date, fetch time, source URL, parser version, and a hash of the parsed
+table evidence.
+
+### Fuel Cost Formula
+
+The arithmetic service is separate from the crawler:
+
+```text
+distance_km = route.distance_m / 1000
+fuel_volume_l = distance_km / actual_efficiency_km_per_l
+fuel_cost_krw = fuel_volume_l × price_krw_per_l
+```
+
+Floating-point precision is retained through the volume and raw-cost steps;
+only the final KRW values are rounded half-up. `/api/fuel/calculate` accepts
+the complete route payload (and optional route ID), so the server validates the
+route geometry and does not trust an arbitrary client distance.
+
+### Driving Cost and Round Trip
+
+The aggregate endpoint is:
+
+```text
+GET  /api/fuel/status
+POST /api/fuel/calculate
+POST /api/costs/driving
+```
+
+`/api/costs/driving` combines official toll and fuel results without changing
+the V0.4 fail-safe. A complete leg exposes fuel, toll, and total; if either
+component is unavailable, the total remains absent and the result is
+`status: "partial"`. Known components can be reported as a known minimum, but
+unknown is never converted to `0원`.
+
+The aggregate service requests a reverse local OSRM route and reverse official
+toll when `round_trip_mode` is `directional`. Thus return fuel uses the reverse
+route distance and return toll is the reverse official result. If the return
+route cannot be obtained, the response explicitly records
+`round_trip_distance_mode: "doubled_one_way"` and
+`round_trip_toll_mode: "doubled_one_way"`; it doubles only a known outbound
+toll and never fabricates an unavailable component.
+
+The browser invalidates the aggregate cost when the route, origin,
+destination, fuel type, or vehicle class changes. Changing only the efficiency
+recalculates fuel arithmetic from the already verified price without another
+web crawl. Request IDs and `AbortController` prevent an older fuel selection
+from overwriting a newer result.
+
+### V0.5 boundaries and known limitations
+
+- Fuel price is a national average, not a station-specific purchase quote.
+- The user-provided actual efficiency does not model congestion, terrain,
+  weather, air conditioning, or traffic-aware routing.
+- LPG is normalized to the official page's displayed won-per-litre unit;
+  energy-equivalent or won-per-kg comparisons are not attempted.
+- Electric vehicles, charging prices, parking, accommodation, restaurants,
+  attractions, reviews, recommendations, itineraries, multi-stop routing,
+  public transit, walking, cycling, and a nationwide geocoder are out of scope.
+- Official source HTML or access policy can change. The parser has bounded
+  navigation/selector/result timeouts, low concurrency, limited fallback, and
+  explicit failure states rather than guessed prices.
+
+The V0.5 browser/network allowlist includes the local app, loopback OSRM,
+OpenFreeMap's configured basemap host, the fixed Korea Expressway toll page,
+and the two fixed Opinet public HTML pages. No Google, Kakao, Naver, Mapbox,
+public OSRM, commercial fuel API, Opinet OpenAPI, analytics, telemetry, proxy
+rotation, or CAPTCHA/access-control bypass is used.

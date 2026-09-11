@@ -77,3 +77,63 @@ def test_cache_ignores_results_from_an_old_parser_version(tmp_path) -> None:
 
     assert cache.get("서울", "부산") is None
     assert cache.get("서울", "부산", allow_stale=True) is None
+
+
+def test_cache_uses_official_ids_as_identity_and_name_index_for_first_read(tmp_path) -> None:
+    cache = TollRateCache(tmp_path / "tolls.db", ttl_days=30)
+    value = lookup().model_copy(
+        update={"entry_official_id": "101", "exit_official_id": "140"}
+    )
+    cache.put("서울", "부산", value)
+
+    by_ids = cache.get(
+        "서울", "부산", entry_official_id="101", exit_official_id="140"
+    )
+    by_names_before_station_resolution = cache.get("서울", "부산")
+    import json
+    import sqlite3
+
+    connection = sqlite3.connect(tmp_path / "tolls.db")
+    connection.execute(
+        """
+        INSERT INTO official_stations(
+            official_id, official_name, normalized_name, aliases_json,
+            verified_at, source_url
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "140",
+            "부산",
+            "부산",
+            json.dumps(["부산", "부산 톨게이트 하이패스"], ensure_ascii=False),
+            datetime.now(timezone.utc).isoformat(),
+            "https://www.ex.co.kr/portal/usefee/selectUseFeeNList.do",
+        ),
+    )
+    connection.execute(
+        """
+        INSERT INTO official_stations(
+            official_id, official_name, normalized_name, aliases_json,
+            verified_at, source_url
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "101",
+            "서울",
+            "서울",
+            json.dumps(["서울"], ensure_ascii=False),
+            datetime.now(timezone.utc).isoformat(),
+            "https://www.ex.co.kr/portal/usefee/selectUseFeeNList.do",
+        ),
+    )
+    connection.commit()
+    connection.close()
+    by_observed_alias = cache.get("서울", "부산 톨게이트 하이패스")
+    wrong_direction = cache.get(
+        "부산", "서울", entry_official_id="140", exit_official_id="101"
+    )
+
+    assert by_ids is not None and by_ids.lookup.entry_official_id == "101"
+    assert by_names_before_station_resolution is not None
+    assert by_observed_alias is not None and by_observed_alias.lookup.exit_official_id == "140"
+    assert wrong_direction is None

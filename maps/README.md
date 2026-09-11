@@ -56,9 +56,10 @@ free. Rebuild the index after replacing the PBF. The SQLite database is
 ignored by Git.
 
 The index schema contains `toll_gates`, `toll_road_ways`, an RTree corridor
-index, `toll_rates_cache`, and metadata. Gate names retain their raw OSM
-values; normalization is conservative and preserves distinct stems such as
-서울 and 서울산.
+index, `official_stations`, `toll_rates_cache`, and metadata. Gate names
+retain their raw OSM values; normalization is conservative and preserves
+distinct stems such as 서울 and 서울산. `official_stations` stores only
+station IDs and aliases observed and verified through the official page.
 
 ## OSRM MLD graph
 
@@ -124,11 +125,13 @@ instructions; there is no public OSRM fallback.
 ## V0.4 official toll source
 
 The toll crawler uses the [한국도로공사 통행요금조회
-page](https://www.ex.co.kr/portal/usefee/selectUseFeeNList.do) as a normal
-HTML client. It first establishes a session with GET, then submits the public
-page form with the departure and arrival toll-office names. It does not call
-the page's helper AJAX endpoint or a public toll API. Requests are bounded and
-rate-limited, and a 30-day cache avoids repeated lookups.
+page](https://www.ex.co.kr/portal/usefee/selectUseFeeNList.do) through a
+Playwright browser adapter. It loads the public toll-office popup, collects
+the canonical station list, validates the selected names through the page's
+normal station-check flow, submits the public HTML form, and parses the
+rendered result. It does not use an OpenAPI endpoint, private API, or public
+toll API. Browser navigation, selector, and result waits are bounded; a low
+concurrency lock and 30-day cache avoid aggressive repeated lookups.
 
 The first authoritative support target is 한국도로공사-managed toll roads.
 Private operators or unresolved OSM operator evidence are returned as an

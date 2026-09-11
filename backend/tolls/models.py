@@ -35,6 +35,71 @@ VEHICLE_CLASS_LABELS: dict[TollVehicleClass, str] = {
 }
 
 
+class TollStage(str, Enum):
+    """Observable stages of one route-to-official-price lookup."""
+
+    ROUTE_OK = "ROUTE_OK"
+    TOLL_CANDIDATES_FOUND = "TOLL_CANDIDATES_FOUND"
+    TOLLGATE_DEDUP_OK = "TOLLGATE_DEDUP_OK"
+    ENTRY_EXIT_RESOLUTION_OK = "ENTRY_EXIT_RESOLUTION_OK"
+    OFFICIAL_STATION_MATCH_OK = "OFFICIAL_STATION_MATCH_OK"
+    OFFICIAL_PAGE_REQUEST_OK = "OFFICIAL_PAGE_REQUEST_OK"
+    OFFICIAL_RESULT_PARSE_OK = "OFFICIAL_RESULT_PARSE_OK"
+    VEHICLE_PRICE_FOUND = "VEHICLE_PRICE_FOUND"
+    TOLL_COMPLETE = "TOLL_COMPLETE"
+
+
+class TollFailureCode(str, Enum):
+    """Stable failure codes exposed in development diagnostics."""
+
+    NO_TOLL_CANDIDATES = "NO_TOLL_CANDIDATES"
+    AMBIGUOUS_TOLLGATE = "AMBIGUOUS_TOLLGATE"
+    ENTRY_EXIT_UNRESOLVED = "ENTRY_EXIT_UNRESOLVED"
+    OFFICIAL_STATION_NOT_FOUND = "OFFICIAL_STATION_NOT_FOUND"
+    OFFICIAL_REQUEST_FAILED = "OFFICIAL_REQUEST_FAILED"
+    OFFICIAL_REQUEST_TIMEOUT = "OFFICIAL_REQUEST_TIMEOUT"
+    OFFICIAL_ACCESS_DENIED = "OFFICIAL_ACCESS_DENIED"
+    OFFICIAL_PAGE_CHANGED = "OFFICIAL_PAGE_CHANGED"
+    OFFICIAL_PARSE_FAILED = "OFFICIAL_PARSE_FAILED"
+    PRICE_NOT_FOUND = "PRICE_NOT_FOUND"
+    PRIVATE_SEGMENT_UNRESOLVED = "PRIVATE_SEGMENT_UNRESOLVED"
+    TOLL_ROUTE_MISMATCH = "TOLL_ROUTE_MISMATCH"
+
+
+class OfficialStationReference(BaseModel):
+    """The official station identity selected for an OSM gate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    official_id: str = Field(min_length=1, max_length=80)
+    official_name: str = Field(min_length=1, max_length=200)
+    confidence: Literal["verified_alias", "verified_exact", "verified_fuzzy"]
+    matched_osm_name: str | None = Field(default=None, max_length=200)
+
+
+class TollDiagnostics(BaseModel):
+    """Compact stage and evidence trail for the development UI/API."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stage: TollStage = TollStage.ROUTE_OK
+    completed_stages: list[TollStage] = Field(default_factory=list)
+    failure_stage: TollStage | None = None
+    failure_code: TollFailureCode | None = None
+    raw_candidates: int = Field(default=0, strict=True, ge=0)
+    logical_gates: int = Field(default=0, strict=True, ge=0)
+    duplicate_groups: int = Field(default=0, strict=True, ge=0)
+    official_station_count: int = Field(default=0, strict=True, ge=0)
+    entry_candidate_id: str | None = Field(default=None, max_length=120)
+    exit_candidate_id: str | None = Field(default=None, max_length=120)
+    candidate_details: list[dict[str, object]] = Field(default_factory=list)
+    official_entry: OfficialStationReference | None = None
+    official_exit: OfficialStationReference | None = None
+    official_lookup: Literal["not_started", "success", "failed", "cache"] = "not_started"
+    request_events: list[dict[str, object]] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 class TollGate(BaseModel):
     """An OSM-derived gate candidate; ``name`` retains the raw OSM name."""
 
@@ -51,6 +116,7 @@ class TollGate(BaseModel):
     operator: str | None = Field(default=None, max_length=200)
     ref: str | None = Field(default=None, max_length=100)
     gate_type: Literal["toll_booth", "toll_gantry"]
+    tags: dict[str, str] = Field(default_factory=dict)
     source: Literal["osm"] = "osm"
 
 
@@ -63,6 +129,11 @@ class MatchedTollGate(BaseModel):
     distance_to_route_m: float = Field(strict=True, ge=0)
     position_along_route_m: float = Field(strict=True, ge=0)
     confidence: Literal["high", "medium", "low"]
+    duplicate_group: str = Field(default="", max_length=80)
+    duplicate_count: int = Field(default=1, strict=True, ge=1)
+    candidate_role: Literal["candidate", "entry", "intermediate", "exit", "unresolved"] = (
+        "candidate"
+    )
 
 
 class MatchedTollRoad(BaseModel):
@@ -87,6 +158,9 @@ class TollAnalysis(BaseModel):
     toll_road_detected: bool
     toll_roads: list[MatchedTollRoad] = Field(default_factory=list)
     gates: list[MatchedTollGate] = Field(default_factory=list)
+    raw_candidates: list[MatchedTollGate] = Field(default_factory=list)
+    duplicate_groups: int = Field(default=0, strict=True, ge=0)
+    supported_operator_evidence: bool = False
     unsupported_private_road: bool = False
     unknown_toll_operator: bool = False
 
@@ -105,6 +179,8 @@ class TollJourney(BaseModel):
         "unavailable"
     )
     fetched_at: datetime | None = None
+    official_entry_id: str | None = Field(default=None, max_length=80)
+    official_exit_id: str | None = Field(default=None, max_length=80)
 
 
 class TollResult(BaseModel):
@@ -119,6 +195,7 @@ class TollResult(BaseModel):
     known_toll_krw: int | None = Field(default=None, strict=True, ge=0)
     journeys: list[TollJourney] = Field(default_factory=list)
     detected_toll_gates: list[MatchedTollGate] = Field(default_factory=list)
+    logical_toll_gates: list[MatchedTollGate] = Field(default_factory=list)
     unknown_segments: int = Field(default=0, strict=True, ge=0)
     reason: str | None = Field(default=None, max_length=200)
     source_status: Literal["fresh", "stale", "unavailable", "not_applicable"] = (
@@ -126,6 +203,7 @@ class TollResult(BaseModel):
     )
     fetched_at: datetime | None = None
     route_id: str = Field(min_length=1, max_length=80)
+    diagnostics: TollDiagnostics = Field(default_factory=TollDiagnostics)
 
     @model_validator(mode="after")
     def validate_completion(self) -> "TollResult":

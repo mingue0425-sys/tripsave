@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import sqlite3
 from pathlib import Path
@@ -10,7 +11,7 @@ from pathlib import Path
 from backend.tolls.matcher import (
     Coordinate,
     coordinate_distance_meters,
-    match_toll_gates,
+    match_toll_gates_detailed,
     nearest_point_on_route,
 )
 from backend.tolls.models import (
@@ -25,6 +26,9 @@ from config import (
     TOLL_GATE_MATCH_THRESHOLD_M,
     TOLL_ROAD_MATCH_THRESHOLD_M,
 )
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class TollIndexUnavailableError(RuntimeError):
@@ -104,7 +108,7 @@ class TollIndex:
         rows = connection.execute(
             """
             SELECT id, osm_type, osm_id, name, normalized_name, lat, lng,
-                   road_name, operator, ref, gate_type, source
+                   road_name, operator, ref, gate_type, tags_json, source
             FROM toll_gates
             ORDER BY osm_type, osm_id
             """
@@ -112,7 +116,13 @@ class TollIndex:
         gates: list[TollGate] = []
         for row in rows:
             try:
-                gates.append(TollGate.model_validate(dict(row)))
+                value = dict(row)
+                try:
+                    value["tags"] = json.loads(value.pop("tags_json") or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    value["tags"] = {}
+                    value.pop("tags_json", None)
+                gates.append(TollGate.model_validate(value))
             except (TypeError, ValueError):
                 continue
         self._gates = gates
@@ -197,21 +207,80 @@ class TollIndex:
             raise TollIndexUnavailableError(
                 "Local OSM toll index is not ready. Run the toll index setup procedure."
             )
-        gates = match_toll_gates(
+        gates, raw_candidates = match_toll_gates_detailed(
             route_coordinates,
             self.gates(),
             threshold_m=gate_threshold_m,
             deduplication_threshold_m=gate_deduplication_threshold_m,
         )
+        route_length_m = sum(
+            coordinate_distance_meters(first, second)
+            for first, second in zip(route_coordinates, route_coordinates[1:])
+        )
+        for candidate_number, candidate in enumerate(raw_candidates, start=1):
+            tags = candidate.gate.tags
+            LOGGER.info(
+                "Toll Candidate #%d raw_osm_name=%r normalized_name=%r "
+                "lat=%.7f lng=%.7f id=%s osm_id=%d osm_type=%s gate_type=%s ref=%r "
+                "barrier=%r highway=%r toll=%r operator=%r road_name=%r "
+                "route_distance_m=%.1f distance_to_route_m=%.1f "
+                "position_along_route_m=%.1f duplicate_group=%s "
+                "candidate_role=%s",
+                candidate_number,
+                candidate.gate.name,
+                candidate.gate.normalized_name,
+                candidate.gate.lat,
+                candidate.gate.lng,
+                candidate.gate.id,
+                candidate.gate.osm_id,
+                candidate.gate.osm_type,
+                candidate.gate.gate_type,
+                candidate.gate.ref,
+                tags.get("barrier"),
+                tags.get("highway"),
+                tags.get("toll"),
+                candidate.gate.operator,
+                candidate.gate.road_name,
+                route_length_m,
+                candidate.distance_to_route_m,
+                candidate.position_along_route_m,
+                candidate.duplicate_group,
+                candidate.candidate_role,
+            )
+        LOGGER.info(
+            "Toll gate grouping raw_candidates=%d logical_tollgates=%d duplicate_groups=%d",
+            len(raw_candidates),
+            len(gates),
+            sum(1 for gate in gates if gate.duplicate_count > 1),
+        )
         roads = self._nearby_toll_roads(route_coordinates, road_threshold_m)
+        supported_operator_evidence = any(
+            road.operator and _is_supported_operator(road.operator) for road in roads
+        ) or any(
+            gate.gate.operator and _is_supported_operator(gate.gate.operator) for gate in gates
+        )
         unsupported_private = any(
             road.operator and not _is_supported_operator(road.operator) for road in roads
+        ) or any(
+            gate.gate.operator and not _is_supported_operator(gate.gate.operator)
+            for gate in gates
         )
-        unknown_operator = any(not road.operator for road in roads)
+        # A missing operator tag on one way is common in OSM.  It is only a
+        # blocking unknown-operator condition when the route has no positive
+        # Korea Expressway operator evidence at all; otherwise the station
+        # and road context still have an auditable supported source.
+        operator_values = [road.operator for road in roads]
+        operator_values.extend(gate.gate.operator for gate in gates)
+        unknown_operator = bool(operator_values) and not supported_operator_evidence and any(
+            not operator for operator in operator_values
+        )
         return TollAnalysis(
             toll_road_detected=bool(roads),
             toll_roads=roads,
             gates=gates,
+            raw_candidates=raw_candidates,
+            duplicate_groups=sum(1 for gate in gates if gate.duplicate_count > 1),
+            supported_operator_evidence=supported_operator_evidence,
             unsupported_private_road=unsupported_private,
             unknown_toll_operator=unknown_operator,
         )

@@ -25,6 +25,8 @@ def test_live_official_html_lookup_returns_all_vehicle_columns() -> None:
     pairs = [
         ("city-seoul", "city-busan"),
         ("city-seoul", "city-daejeon"),
+        ("city-busan", "city-daegu"),
+        ("city-gangneung", "city-seoul"),
         ("city-daejeon", "city-gwangju"),
     ]
 
@@ -41,5 +43,7 @@ def test_live_official_html_lookup_returns_all_vehicle_columns() -> None:
     for result in results:
         assert set(result.prices) == expected_classes
         assert all(isinstance(value, int) and value >= 0 for value in result.prices.values())
+        assert result.prices[TollVehicleClass.CLASS_1] > 0
         assert result.distance_km is not None and result.distance_km > 0
+        assert result.entry_official_id and result.exit_official_id
         assert len(result.raw_evidence_hash) == 64

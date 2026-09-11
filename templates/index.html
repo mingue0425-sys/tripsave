@@ -13,7 +13,7 @@
     <div class="app-shell">
       <header class="app-header">
         <div>
-            <p class="eyebrow">V0.4 · LOCAL TOLL ENGINE</p>
+            <p class="eyebrow">V0.5 · DRIVING COST ENGINE</p>
           <h1>Korea Trip Optimizer</h1>
         </div>
         <span class="version-badge">{{ app_version }}</span>
@@ -125,7 +125,7 @@
               로컬 OSRM 경로 엔진을 준비하는 중입니다.
             </p>
 
-            <div class="vehicle-selector">
+            <div class="vehicle-selector vehicle-selector--toll">
               <label for="vehicle-class">차종</label>
               <select id="vehicle-class">
                 <option value="class_1">1종 승용/소형차</option>
@@ -136,6 +136,103 @@
                 <option value="class_5">5종 특수화물차</option>
               </select>
             </div>
+
+            <section class="fuel-panel" aria-labelledby="fuel-panel-title">
+              <div class="fuel-panel-heading">
+                <div>
+                  <p class="location-kicker">FUEL &amp; DRIVING COST</p>
+                  <h2 id="fuel-panel-title">유류비·이동비</h2>
+                </div>
+              </div>
+              <div class="fuel-inputs">
+                <div class="fuel-input-group">
+                  <label for="fuel-type">연료 종류</label>
+                  <select id="fuel-type">
+                    <option value="gasoline">휘발유</option>
+                    <option value="diesel">경유</option>
+                    <option value="lpg">LPG</option>
+                  </select>
+                </div>
+                <div class="fuel-input-group">
+                  <label for="fuel-efficiency">실제 연비</label>
+                  <div class="fuel-efficiency-input">
+                    <input
+                      id="fuel-efficiency"
+                      type="number"
+                      min="0.1"
+                      max="100"
+                      step="0.1"
+                      inputmode="decimal"
+                      placeholder="예: 13.5"
+                      aria-describedby="fuel-efficiency-help"
+                    >
+                    <span>km/L</span>
+                  </div>
+                  <p id="fuel-efficiency-help" class="input-help">사용자의 실제 주행 연비를 입력하세요.</p>
+                </div>
+              </div>
+              <button id="driving-cost-calculate" class="button button--cost" type="button" disabled>
+                편도·왕복 이동비 계산
+              </button>
+              <dl id="fuel-metrics" class="fuel-metrics" hidden>
+                <div>
+                  <dt>기준 유가</dt>
+                  <dd id="fuel-price">—</dd>
+                </div>
+                <div>
+                  <dt>필요 연료</dt>
+                  <dd id="fuel-volume">—</dd>
+                </div>
+                <div>
+                  <dt>예상 유류비</dt>
+                  <dd id="fuel-one-way">—</dd>
+                </div>
+                <div>
+                  <dt>왕복 예상 유류비</dt>
+                  <dd id="fuel-round-trip">—</dd>
+                </div>
+              </dl>
+              <p id="fuel-price-source" class="fuel-price-source" hidden></p>
+              <p id="fuel-status" class="fuel-status" role="status" aria-live="polite">
+                경로 계산 후 연료 종류와 실제 연비를 입력하세요.
+              </p>
+
+              <section class="driving-cost-panel" aria-labelledby="driving-cost-title">
+                <div class="driving-cost-heading">
+                  <p class="location-kicker">TOTAL DRIVING COST</p>
+                  <h3 id="driving-cost-title">자동차 이동비</h3>
+                </div>
+                <dl id="driving-cost-metrics" class="driving-cost-metrics" hidden>
+                  <div>
+                    <dt>편도 유류비</dt>
+                    <dd id="cost-one-way-fuel">—</dd>
+                  </div>
+                  <div>
+                    <dt>편도 통행료</dt>
+                    <dd id="cost-one-way-toll">—</dd>
+                  </div>
+                  <div class="cost-total-row">
+                    <dt>편도 이동비</dt>
+                    <dd id="cost-one-way-total">—</dd>
+                  </div>
+                  <div>
+                    <dt>왕복 유류비</dt>
+                    <dd id="cost-round-trip-fuel">—</dd>
+                  </div>
+                  <div>
+                    <dt>왕복 통행료</dt>
+                    <dd id="cost-round-trip-toll">—</dd>
+                  </div>
+                  <div class="cost-total-row">
+                    <dt>왕복 이동비</dt>
+                    <dd id="cost-round-trip-total">—</dd>
+                  </div>
+                </dl>
+                <p id="driving-cost-status" class="driving-cost-status" role="status" aria-live="polite">
+                  통행료와 유가를 확인하면 이동비를 계산합니다.
+                </p>
+              </section>
+            </section>
 
             <section class="toll-panel" aria-labelledby="toll-panel-title">
               <div class="toll-panel-heading">
@@ -160,10 +257,26 @@
                   <dt>조회 차종</dt>
                   <dd id="toll-vehicle">—</dd>
                 </div>
+                <div>
+                  <dt>출발 영업소</dt>
+                  <dd id="toll-entry">—</dd>
+                </div>
+                <div>
+                  <dt>도착 영업소</dt>
+                  <dd id="toll-exit">—</dd>
+                </div>
+                <div>
+                  <dt>확인 시각</dt>
+                  <dd id="toll-verified-at">—</dd>
+                </div>
               </dl>
               <p id="toll-status" class="toll-status" role="status" aria-live="polite">
                 공식 웹페이지 조회는 서버에서 제한적으로 수행합니다.
               </p>
+              <details id="toll-debug-panel" class="toll-debug" hidden>
+                <summary>개발 진단</summary>
+                <pre id="toll-debug"></pre>
+              </details>
             </section>
           </section>
 
@@ -221,5 +334,6 @@
     <script src="/static/js/route.js" defer></script>
     <script src="/static/js/toll_markers.js" defer></script>
     <script src="/static/js/toll.js" defer></script>
+    <script src="/static/js/cost.js" defer></script>
   </body>
 </html>
