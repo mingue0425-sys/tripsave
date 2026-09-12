@@ -8,6 +8,7 @@
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="stylesheet" href="/static/vendor/maplibre-gl/maplibre-gl.css">
     <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/accommodation.css">
   </head>
   <body data-map-available="true">
     <div class="app-shell">
@@ -90,6 +91,8 @@
               <ul id="destination-search-results" class="search-results" role="listbox" aria-label="목적지 검색 결과"></ul>
             </div>
           </section>
+
+          {% include "components/accommodation.html" %}
 
           <div class="panel-actions">
             <button id="swap-button" class="button button--secondary" type="button" disabled>
@@ -335,5 +338,6 @@
     <script src="/static/js/toll_markers.js" defer></script>
     <script src="/static/js/toll.js" defer></script>
     <script src="/static/js/cost.js" defer></script>
+    <script src="/static/js/accommodation.js" defer></script>
   </body>
 </html>

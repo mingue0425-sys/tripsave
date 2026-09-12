@@ -27,6 +27,11 @@ from config import (
     map_config,
 )
 from backend.places import search_places
+from backend.accommodation.models import (
+    AccommodationSearchRequest,
+    AccommodationSearchResponse,
+)
+from backend.accommodation.service import ACCOMMODATION_API_URL, AccommodationService
 from backend.fuel.errors import FuelServiceError
 from backend.fuel.models import (
     DrivingCostRequest,
@@ -67,6 +72,7 @@ driving_cost_service = DrivingCostService(
     fuel_service=fuel_price_service,
     routing_client=routing_client,
 )
+accommodation_service = AccommodationService(database_path=TOLL_INDEX_DB)
 
 # StaticFiles performs safe path handling. Basemap tiles are intentionally
 # fetched from the configured OpenFreeMap provider during development; this
@@ -113,6 +119,17 @@ async def request_validation_handler(
                 },
             },
         )
+    if request.url.path == ACCOMMODATION_API_URL:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "status": "error",
+                "error": {
+                    "code": "INVALID_REQUEST",
+                    "message": "숙소 검색 요청이 올바르지 않습니다.",
+                },
+            },
+        )
     return await request_validation_exception_handler(request, exc)
 
 
@@ -154,6 +171,18 @@ async def place_search(
         "query": query,
         "results": [place.model_dump() for place in search_places(query, limit)],
     }
+
+
+@app.post(
+    ACCOMMODATION_API_URL,
+    response_model=AccommodationSearchResponse,
+)
+async def search_accommodations(
+    request: AccommodationSearchRequest,
+) -> AccommodationSearchResponse:
+    """Search public accommodation pages for one destination and stay."""
+
+    return await accommodation_service.search(request)
 
 
 def routing_error_response(error: RoutingError) -> JSONResponse:
