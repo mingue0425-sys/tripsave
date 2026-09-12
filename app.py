@@ -27,6 +27,8 @@ from config import (
     map_config,
 )
 from backend.places import search_places
+from backend.places.models import PlaceSearchRequest, PlaceSearchResponse
+from backend.places.service import PLACES_API_URL, PlaceService
 from backend.accommodation.models import (
     AccommodationSearchRequest,
     AccommodationSearchResponse,
@@ -73,6 +75,7 @@ driving_cost_service = DrivingCostService(
     routing_client=routing_client,
 )
 accommodation_service = AccommodationService(database_path=TOLL_INDEX_DB)
+places_service = PlaceService()
 
 # StaticFiles performs safe path handling. Basemap tiles are intentionally
 # fetched from the configured OpenFreeMap provider during development; this
@@ -130,6 +133,17 @@ async def request_validation_handler(
                 },
             },
         )
+    if request.url.path == PLACES_API_URL and request.method == "POST":
+        return JSONResponse(
+            status_code=422,
+            content={
+                "status": "error",
+                "error": {
+                    "code": "INVALID_REQUEST",
+                    "message": "주변 장소 검색 요청이 올바르지 않습니다.",
+                },
+            },
+        )
     return await request_validation_exception_handler(request, exc)
 
 
@@ -171,6 +185,18 @@ async def place_search(
         "query": query,
         "results": [place.model_dump() for place in search_places(query, limit)],
     }
+
+
+@app.post(
+    PLACES_API_URL,
+    response_model=PlaceSearchResponse,
+)
+async def search_places_around_destination(
+    request: PlaceSearchRequest,
+) -> PlaceSearchResponse:
+    """Search public restaurant and attraction pages near the destination."""
+
+    return await places_service.search(request)
 
 
 @app.post(

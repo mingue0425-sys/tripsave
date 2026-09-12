@@ -1,0 +1,28 @@
+<section class="places-panel" id="places-panel" aria-labelledby="places-panel-title">
+  <div class="places-panel__heading">
+    <div>
+      <p class="location-kicker">PLACES AROUND DESTINATION</p>
+      <h2 id="places-panel-title">맛집 · 관광지</h2>
+    </div>
+  </div>
+  <p id="places-summary" class="places-summary">
+    목적지를 선택하면 주변 공개 웹페이지에서 장소를 검색할 수 있습니다.
+  </p>
+  <div class="places-filters" role="group" aria-label="장소 종류">
+    <label class="places-filter">
+      <input id="places-category-restaurant" type="checkbox" value="restaurant" checked>
+      <span>맛집</span>
+    </label>
+    <label class="places-filter">
+      <input id="places-category-attraction" type="checkbox" value="attraction" checked>
+      <span>관광지</span>
+    </label>
+  </div>
+  <button id="places-search" class="button button--places" type="button" disabled>
+    주변 장소 검색
+  </button>
+  <p id="places-status" class="places-status" role="status" aria-live="polite">
+    목적지를 먼저 선택해 주세요.
+  </p>
+  <div id="places-results" class="places-results" aria-live="polite"></div>
+</section>

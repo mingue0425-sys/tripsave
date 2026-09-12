@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="/static/vendor/maplibre-gl/maplibre-gl.css">
     <link rel="stylesheet" href="/static/css/style.css">
     <link rel="stylesheet" href="/static/css/accommodation.css">
+    <link rel="stylesheet" href="/static/css/places.css">
   </head>
   <body data-map-available="true">
     <div class="app-shell">
@@ -93,6 +94,7 @@
           </section>
 
           {% include "components/accommodation.html" %}
+          {% include "components/places.html" %}
 
           <div class="panel-actions">
             <button id="swap-button" class="button button--secondary" type="button" disabled>
@@ -339,5 +341,6 @@
     <script src="/static/js/toll.js" defer></script>
     <script src="/static/js/cost.js" defer></script>
     <script src="/static/js/accommodation.js" defer></script>
+    <script src="/static/js/places.js" defer></script>
   </body>
 </html>
