@@ -63,11 +63,37 @@ def test_live_representative_route_has_real_toll_fuel_and_cost(
     assert body["fuel"]["complete"] is True
     assert body["fuel"]["price_krw_per_l"] > 0
     assert body["fuel"]["fuel_volume_l"] > 0
-    assert body["driving_cost"]["one_way"]["complete"] is True
-    assert isinstance(body["driving_cost"]["one_way"]["total_krw"], int)
-    assert body["driving_cost"]["round_trip"]["complete"] is True
-    assert isinstance(body["driving_cost"]["round_trip"]["total_krw"], int)
-    assert body["driving_cost"]["round_trip_toll_mode"] in {
-        "directional_official",
-        "doubled_one_way",
+    driving = body["driving_cost"]
+    assert driving["cost_complete"] is True
+    assert driving["outbound"]["complete"] is True
+    assert driving["return"]["complete"] is True
+    assert isinstance(driving["outbound"]["total_krw"], int)
+    assert isinstance(driving["return"]["total_krw"], int)
+    assert driving["round_trip"]["complete"] is True
+    assert isinstance(driving["round_trip"]["total_krw"], int)
+    assert body["return_route"]["distance_m"] == driving["return"]["distance_m"]
+    assert driving["round_trip"]["distance_m"] == (
+        driving["outbound"]["distance_m"] + driving["return"]["distance_m"]
+    )
+    assert driving["round_trip"]["fuel_volume_l"] == (
+        driving["outbound"]["fuel_volume_l"] + driving["return"]["fuel_volume_l"]
+    )
+    assert driving["round_trip"]["fuel_cost_krw"] == (
+        driving["outbound"]["fuel_cost_krw"] + driving["return"]["fuel_cost_krw"]
+    )
+    assert driving["round_trip"]["toll_krw"] == (
+        driving["outbound"]["toll_krw"] + driving["return"]["toll_krw"]
+    )
+    assert driving["round_trip"]["total_krw"] == (
+        driving["outbound"]["total_krw"] + driving["return"]["total_krw"]
+    )
+    assert driving["round_trip"]["total_krw"] >= driving["outbound"]["total_krw"]
+    assert driving["return"]["fuel_cost_krw"] > 0
+    assert driving["round_trip"]["fuel_cost_krw"] > driving["outbound"]["fuel_cost_krw"]
+    assert driving["round_trip_toll"]["mode"] in {
+        "verified_official",
+        "estimated_doubled_outbound",
     }
+    if driving["round_trip_toll"]["mode"] == "estimated_doubled_outbound":
+        assert driving["round_trip_toll"]["verified"] is False
+        assert driving["officially_verified"] is False

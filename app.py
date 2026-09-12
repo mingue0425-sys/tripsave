@@ -1,4 +1,4 @@
-"""FastAPI entry point for Korea Trip Optimizer V0.5."""
+"""FastAPI entry point for Korea Trip Optimizer V0.5.1."""
 
 import logging
 

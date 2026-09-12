@@ -125,13 +125,29 @@
   function dispatchAggregateResult(result) {
     window.dispatchEvent(
       new CustomEvent("kto:driving-cost-result", {
-        detail: { aggregate: result, toll: result.toll || null },
+        detail: { aggregate: result, toll: result.outbound_toll || result.toll || null },
       })
     );
   }
 
   function renderLegValue(leg, key) {
     return leg && Number.isFinite(leg[key]) ? formatWon(leg[key]) : "확인 불가";
+  }
+
+  function formatDistance(value) {
+    return Number.isFinite(value) && value > 0
+      ? `${(value / 1000).toLocaleString("ko-KR", { maximumFractionDigits: 1 })}km`
+      : "확인 불가";
+  }
+
+  function renderTollValue(leg) {
+    if (!leg || !Number.isFinite(leg.toll_krw)) {
+      return "확인 불가";
+    }
+    if (leg.toll_status === "estimated" || leg.toll_mode === "estimated_doubled_outbound") {
+      return `약 ${formatWon(leg.toll_krw)} (가는 길 공식 요금 기반 추정)`;
+    }
+    return formatWon(leg.toll_krw);
   }
 
   function render() {
@@ -149,7 +165,8 @@
     const result = state.result;
     const fuel = result && result.fuel;
     const driving = result && result.driving_cost;
-    const oneWay = driving && driving.one_way;
+    const outbound = driving && driving.outbound;
+    const returnLeg = driving && (driving.return || driving.return_leg);
     const roundTrip = driving && driving.round_trip;
     if (result) {
       fuelMetrics.hidden = false;
@@ -164,7 +181,7 @@
       getElement("fuel-one-way").textContent = fuel && fuel.complete
         ? formatWon(fuel.one_way_krw)
         : "확인 불가";
-      getElement("fuel-round-trip").textContent = fuel && fuel.complete
+      getElement("fuel-round-trip").textContent = fuel && fuel.complete && fuel.round_trip_complete
         ? formatWon(fuel.round_trip_krw)
         : "확인 불가";
       if (priceSource) {
@@ -180,11 +197,17 @@
         }
       }
 
-      getElement("cost-one-way-fuel").textContent = renderLegValue(oneWay, "fuel_krw");
-      getElement("cost-one-way-toll").textContent = renderLegValue(oneWay, "toll_krw");
-      getElement("cost-one-way-total").textContent = renderLegValue(oneWay, "total_krw");
-      getElement("cost-round-trip-fuel").textContent = renderLegValue(roundTrip, "fuel_krw");
-      getElement("cost-round-trip-toll").textContent = renderLegValue(roundTrip, "toll_krw");
+      getElement("cost-outbound-distance").textContent = formatDistance(outbound && outbound.distance_m);
+      getElement("cost-outbound-fuel").textContent = renderLegValue(outbound, "fuel_cost_krw");
+      getElement("cost-outbound-toll").textContent = renderTollValue(outbound);
+      getElement("cost-outbound-total").textContent = renderLegValue(outbound, "total_krw");
+      getElement("cost-return-distance").textContent = formatDistance(returnLeg && returnLeg.distance_m);
+      getElement("cost-return-fuel").textContent = renderLegValue(returnLeg, "fuel_cost_krw");
+      getElement("cost-return-toll").textContent = renderTollValue(returnLeg);
+      getElement("cost-return-total").textContent = renderLegValue(returnLeg, "total_krw");
+      getElement("cost-round-trip-distance").textContent = formatDistance(roundTrip && roundTrip.distance_m);
+      getElement("cost-round-trip-fuel").textContent = renderLegValue(roundTrip, "fuel_cost_krw");
+      getElement("cost-round-trip-toll").textContent = renderTollValue(roundTrip);
       getElement("cost-round-trip-total").textContent = renderLegValue(roundTrip, "total_krw");
 
       if (!fuel || !fuel.complete) {
@@ -194,13 +217,15 @@
       } else {
         setStatus("fuel-status", "공식 웹 유가 확인 완료 · 입력한 실제 연비 기준", "success");
       }
-      if (driving && driving.complete) {
-        const mode = driving.round_trip_toll_mode === "directional_official"
-          ? "왕복 방향별 공식 통행료"
-          : "편도 기준 왕복 환산";
+      if (driving && driving.cost_complete) {
+        const mode = driving.officially_verified
+          ? "왕복 공식 확인"
+          : driving.contains_estimate
+            ? "추정 포함(공식 왕복 확인 전)"
+            : "왕복 계산 완료";
         setStatus("driving-cost-status", `자동차 이동비 계산 완료 · ${mode}`, "success");
       } else {
-        setStatus("driving-cost-status", "유류비 또는 통행료를 확인하지 못해 총 이동비를 계산하지 않았습니다.", "error");
+        setStatus("driving-cost-status", "오는 길 정보가 확인되지 않아 왕복 합계를 완성하지 못했습니다.", "error");
       }
       return;
     }
@@ -230,6 +255,24 @@
     return Math.floor(value + 0.5);
   }
 
+  function recalculateLegFuel(leg, fuelVolume, fuelCost, fuelStatus) {
+    const next = {
+      ...leg,
+      fuel_volume_l: fuelVolume,
+      fuel_cost_krw: fuelCost,
+      fuel_status: fuelStatus,
+    };
+    if (next.complete && Number.isFinite(next.toll_krw)) {
+      next.total_krw = fuelCost + next.toll_krw;
+      next.known_minimum_krw = null;
+    } else {
+      next.total_krw = null;
+      const known = [fuelCost, next.toll_krw].filter(Number.isFinite);
+      next.known_minimum_krw = known.length ? known.reduce((sum, value) => sum + value, 0) : null;
+    }
+    return next;
+  }
+
   function recalculateEfficiency() {
     const result = state.result;
     const nextEfficiency = efficiency();
@@ -239,49 +282,91 @@
     }
     const price = Number(result.fuel.price_krw_per_l);
     const distanceKm = Number(state.route && state.route.distance_m) / 1000;
-    const roundDistanceKm = Number(result.fuel.round_trip_distance_km) || distanceKm * 2;
+    const returnLeg = result.driving_cost && (result.driving_cost.return || result.driving_cost.return_leg);
+    const returnDistanceKm = Number(result.fuel.return_distance_km)
+      || Number(returnLeg && returnLeg.distance_m) / 1000;
     if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(distanceKm) || distanceKm <= 0) {
       clearResult("연비가 변경되어 이동비를 다시 계산하세요.");
       return;
     }
+
     const oneVolume = distanceKm / nextEfficiency;
-    const roundVolume = roundDistanceKm / nextEfficiency;
     const oneFuel = roundKrw(oneVolume * price);
-    const roundFuel = roundKrw(roundVolume * price);
+    const hasReturn = Number.isFinite(returnDistanceKm) && returnDistanceKm > 0;
+    const returnVolume = hasReturn ? returnDistanceKm / nextEfficiency : null;
+    const returnFuel = hasReturn ? roundKrw(returnVolume * price) : null;
+    const roundVolume = hasReturn ? oneVolume + returnVolume : null;
+    const roundFuel = hasReturn ? oneFuel + returnFuel : null;
+    const fuelStatus = result.fuel.price && result.fuel.price.source_status === "fresh"
+      ? "verified"
+      : "estimated";
     const nextFuel = {
       ...result.fuel,
       fuel_efficiency_km_per_l: nextEfficiency,
       fuel_volume_l: oneVolume,
       fuel_cost_krw: oneFuel,
       one_way_krw: oneFuel,
+      return_distance_km: hasReturn ? returnDistanceKm : null,
+      return_fuel_volume_l: returnVolume,
+      return_fuel_cost_krw: returnFuel,
+      round_trip_complete: hasReturn,
+      round_trip_distance_km: hasReturn ? distanceKm + returnDistanceKm : null,
       round_trip_fuel_volume_l: roundVolume,
       round_trip_fuel_cost_krw: roundFuel,
       round_trip_krw: roundFuel,
+      round_trip_distance_mode: hasReturn ? result.fuel.round_trip_distance_mode : "unknown",
     };
-    const nextOneWay = { ...result.driving_cost.one_way, fuel_krw: oneFuel };
-    const nextRoundTrip = { ...result.driving_cost.round_trip, fuel_krw: roundFuel };
-    if (Number.isFinite(nextOneWay.toll_krw)) {
-      nextOneWay.total_krw = nextOneWay.complete ? oneFuel + nextOneWay.toll_krw : null;
-      nextOneWay.known_minimum_krw = nextOneWay.complete ? null : oneFuel + nextOneWay.toll_krw;
-    } else {
-      nextOneWay.total_krw = null;
-      nextOneWay.known_minimum_krw = nextOneWay.complete ? null : oneFuel;
+    const outbound = recalculateLegFuel(
+      result.driving_cost.outbound,
+      oneVolume,
+      oneFuel,
+      fuelStatus,
+    );
+    const nextReturn = hasReturn
+      ? recalculateLegFuel(returnLeg, returnVolume, returnFuel, fuelStatus)
+      : {
+          ...returnLeg,
+          distance_m: null,
+          fuel_volume_l: null,
+          fuel_cost_krw: null,
+          total_krw: null,
+          known_minimum_krw: Number.isFinite(returnLeg && returnLeg.toll_krw)
+            ? returnLeg.toll_krw
+            : null,
+          status: "unknown",
+          fuel_status: "unknown",
+        };
+    const nextRoundTrip = hasReturn
+      ? recalculateLegFuel(
+          result.driving_cost.round_trip,
+          roundVolume,
+          roundFuel,
+          fuelStatus,
+        )
+      : {
+          ...result.driving_cost.round_trip,
+          distance_m: null,
+          fuel_volume_l: null,
+          fuel_cost_krw: null,
+          total_krw: null,
+          known_minimum_krw: null,
+          status: "unknown",
+          fuel_status: "unknown",
+        };
+    if (hasReturn) {
+      nextRoundTrip.distance_m = (distanceKm + returnDistanceKm) * 1000;
     }
-    if (Number.isFinite(nextRoundTrip.toll_krw)) {
-      nextRoundTrip.total_krw = nextRoundTrip.complete ? roundFuel + nextRoundTrip.toll_krw : null;
-      nextRoundTrip.known_minimum_krw = nextRoundTrip.complete ? null : roundFuel + nextRoundTrip.toll_krw;
-    } else {
-      nextRoundTrip.total_krw = null;
-      nextRoundTrip.known_minimum_krw = nextRoundTrip.complete ? null : roundFuel;
-    }
+    const costComplete = outbound.complete && nextReturn.complete && nextRoundTrip.complete;
     state.result = {
       ...result,
       fuel: nextFuel,
       driving_cost: {
         ...result.driving_cost,
-        one_way: nextOneWay,
+        outbound,
+        return: nextReturn,
         round_trip: nextRoundTrip,
-        complete: nextOneWay.complete && nextRoundTrip.complete,
+        complete: costComplete,
+        cost_complete: costComplete,
       },
     };
     render();

@@ -456,7 +456,7 @@ only the final KRW values are rounded half-up. `/api/fuel/calculate` accepts
 the complete route payload (and optional route ID), so the server validates the
 route geometry and does not trust an arbitrary client distance.
 
-### Driving Cost and Round Trip
+### Driving Cost and Round Trip (V0.5.1)
 
 The aggregate endpoint is:
 
@@ -467,18 +467,41 @@ POST /api/costs/driving
 ```
 
 `/api/costs/driving` combines official toll and fuel results without changing
-the V0.4 fail-safe. A complete leg exposes fuel, toll, and total; if either
-component is unavailable, the total remains absent and the result is
-`status: "partial"`. Known components can be reported as a known minimum, but
-unknown is never converted to `0원`.
+the V0.4 fail-safe. The canonical aggregate is
+`driving_cost.outbound`, `driving_cost.return`, and
+`driving_cost.round_trip`; the JSON response does not use `one_way` as its
+canonical leg name. Each leg exposes `distance_m`, `fuel_volume_l`,
+`fuel_cost_krw`, `toll_krw`, and `total_krw`.
 
-The aggregate service requests a reverse local OSRM route and reverse official
-toll when `round_trip_mode` is `directional`. Thus return fuel uses the reverse
-route distance and return toll is the reverse official result. If the return
-route cannot be obtained, the response explicitly records
-`round_trip_distance_mode: "doubled_one_way"` and
-`round_trip_toll_mode: "doubled_one_way"`; it doubles only a known outbound
-toll and never fabricates an unavailable component.
+The arithmetic invariants are strict:
+
+```text
+round_trip.distance_m = outbound.distance_m + return.distance_m
+round_trip.fuel_volume_l = outbound.fuel_volume_l + return.fuel_volume_l
+round_trip.fuel_cost_krw = outbound.fuel_cost_krw + return.fuel_cost_krw
+round_trip.toll_krw = outbound.toll_krw + return.toll_krw
+round_trip.total_krw = round_trip.fuel_cost_krw + round_trip.toll_krw
+```
+
+When `round_trip_mode` is `directional`, the aggregate requests a reverse
+local OSRM route and a reverse official toll. Return fuel therefore uses the
+actual B→A route distance. If reverse routing fails, the return and round-trip
+cost remain incomplete with `reason: "RETURN_ROUTE_UNAVAILABLE"`; no doubled
+fuel fallback is presented as a normal complete round trip.
+
+`round_trip_toll` separates amount availability from verification:
+
+- `verified_official`: outbound and return official tolls are both available.
+- `estimated_doubled_outbound`: only outbound official toll is available and
+  the displayed return amount is an explicit estimate; `verified` and
+  `complete` remain false.
+- `unknown`: no safe toll amount is available; the API never turns it into
+  zero.
+
+Thus a numeric estimate may have `cost_complete: true` while
+`officially_verified: false` and `contains_estimate: true`. A reverse-route
+failure has `cost_complete: false`. The UI renders outbound, return, and
+round-trip breakdowns independently and labels estimated tolls as estimates.
 
 The browser invalidates the aggregate cost when the route, origin,
 destination, fuel type, or vehicle class changes. Changing only the efficiency

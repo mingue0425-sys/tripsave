@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import sqlite3
+import threading
 from pathlib import Path
 
 from backend.tolls.matcher import (
@@ -47,7 +48,11 @@ class TollIndex:
 
     def __init__(self, database_path: Path) -> None:
         self.database_path = Path(database_path)
-        self._connection: sqlite3.Connection | None = None
+        # FastAPI's TestClient and production workers can invoke one service
+        # instance from more than one thread.  Keep one read-only connection
+        # per thread rather than reusing a sqlite connection created elsewhere.
+        self._connections: dict[int, sqlite3.Connection] = {}
+        self._connection_lock = threading.RLock()
         self._gates: list[TollGate] | None = None
 
     @property
@@ -64,23 +69,34 @@ class TollIndex:
             return False
 
     def _get_connection(self) -> sqlite3.Connection:
-        if self._connection is not None:
-            return self._connection
-        try:
-            self._connection = connect_database(str(self.database_path), read_only=True)
-            self._connection.execute("SELECT 1 FROM toll_gates LIMIT 1").fetchone()
-        except (OSError, sqlite3.Error) as error:
-            self._connection = None
-            raise TollIndexUnavailableError(
-                f"Toll index is unavailable: {self.database_path}"
-            ) from error
-        return self._connection
+        thread_id = threading.get_ident()
+        with self._connection_lock:
+            connection = self._connections.get(thread_id)
+            if connection is not None:
+                return connection
+            try:
+                connection = connect_database(
+                    str(self.database_path),
+                    read_only=True,
+                    check_same_thread=False,
+                )
+                connection.execute("SELECT 1 FROM toll_gates LIMIT 1").fetchone()
+            except (OSError, sqlite3.Error) as error:
+                if connection is not None:
+                    connection.close()
+                self._connections.pop(thread_id, None)
+                raise TollIndexUnavailableError(
+                    f"Toll index is unavailable: {self.database_path}"
+                ) from error
+            self._connections[thread_id] = connection
+            return connection
 
     def close(self) -> None:
-        if self._connection is not None:
-            self._connection.close()
-            self._connection = None
-        self._gates = None
+        with self._connection_lock:
+            for connection in self._connections.values():
+                connection.close()
+            self._connections.clear()
+            self._gates = None
 
     def stats(self) -> dict[str, object]:
         connection = self._get_connection()

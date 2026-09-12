@@ -43,8 +43,10 @@ def test_calculator_supports_directional_return_distance() -> None:
         fuel_efficiency_km_per_l=10.0,
         price=make_price(price=1_700.0),
     )
-    assert result.round_trip_distance_km == 120.0
-    assert result.round_trip_krw == 20_400
+    assert result.round_trip_distance_km == 220.0
+    assert result.round_trip_distance_km == result.distance_km + result.return_distance_km
+    assert result.round_trip_krw == 37_400
+    assert result.round_trip_krw == result.one_way_krw + result.return_fuel_cost_krw
     assert result.round_trip_distance_mode == "reverse_route"
 
 

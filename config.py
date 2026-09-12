@@ -10,7 +10,7 @@ TEMPLATES_DIR = PROJECT_ROOT / "templates"
 STATIC_DIR = PROJECT_ROOT / "static"
 PLACES_DATA_FILE = STATIC_DIR / "data" / "places.json"
 
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.1"
 PLACES_SEARCH_URL = "/api/places/search"
 ROUTE_API_URL = "/api/routes"
 ROUTING_STATUS_URL = "/api/routing/status"
