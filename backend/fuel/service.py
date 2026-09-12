@@ -26,6 +26,7 @@ from backend.fuel.models import (
     FuelPriceResult,
     FuelResponse,
     FuelType,
+    RoundTripToll,
 )
 from backend.fuel.official import (
     FuelSourceError,
@@ -305,45 +306,199 @@ class FuelPriceService:
             round_trip_distance_mode=round_trip_distance_mode,
         )
 
+    async def calculate_outbound_only_with_price(
+        self,
+        request: FuelCalculationRequest,
+        price: FuelPriceResult,
+        *,
+        reason: str = "RETURN_ROUTE_UNAVAILABLE",
+    ) -> FuelCostResult:
+        """Return only the known outbound fuel when no return route exists."""
 
-def _confidence_for_components(
-    *,
-    fuel: FuelCostResult,
-    toll: TollResult | None,
-    complete: bool,
-) -> str:
-    if not complete:
-        return "unknown"
-    if fuel.confidence == "stale" or (toll is not None and toll.source_status == "stale"):
-        return "stale"
-    if fuel.complete and toll is not None and toll.complete:
-        return "estimated"
-    return "unknown"
+        validate_fuel_route(request)
+        if not price.complete:
+            return self._incomplete_cost(request, price)
+        return FuelCostCalculator.calculate_outbound_only(
+            distance_m=request.route.distance_m,
+            fuel_efficiency_km_per_l=request.fuel_efficiency_km_per_l,
+            price=price,
+            reason=reason,
+        )
 
 
 def _leg(
     *,
-    fuel_krw: int | None,
+    route_id: str | None,
+    distance_m: float | None,
+    fuel_volume_l: float | None,
+    fuel_cost_krw: int | None,
     toll_krw: int | None,
-    fuel: FuelCostResult,
-    toll: TollResult | None,
+    fuel_status: str,
+    toll_mode: str = "unknown",
+    toll_verified: bool = False,
+    reason: str | None = None,
 ) -> DrivingCostLeg:
-    complete = fuel_krw is not None and toll_krw is not None
+    complete = (
+        distance_m is not None
+        and fuel_volume_l is not None
+        and fuel_cost_krw is not None
+        and toll_krw is not None
+    )
+    toll_status = "unknown"
+    if toll_krw is not None:
+        toll_status = "verified" if toll_verified else "estimated"
     if complete:
+        status = "verified" if fuel_status == "verified" and toll_status == "verified" else "estimated"
         return DrivingCostLeg(
             complete=True,
-            fuel_krw=fuel_krw,
+            route_id=route_id,
+            distance_m=distance_m,
+            fuel_volume_l=fuel_volume_l,
+            fuel_cost_krw=fuel_cost_krw,
             toll_krw=toll_krw,
-            total_krw=fuel_krw + toll_krw,
-            confidence=_confidence_for_components(fuel=fuel, toll=toll, complete=True),
+            total_krw=fuel_cost_krw + toll_krw,
+            status=status,
+            fuel_status=fuel_status,
+            toll_status=toll_status,
+            toll_mode=toll_mode,
+            toll_verified=toll_verified,
+            reason=reason,
         )
-    known = [value for value in (fuel_krw, toll_krw) if value is not None]
+    known = [value for value in (fuel_cost_krw, toll_krw) if value is not None]
     return DrivingCostLeg(
         complete=False,
-        fuel_krw=fuel_krw,
+        route_id=route_id,
+        distance_m=distance_m,
+        fuel_volume_l=fuel_volume_l,
+        fuel_cost_krw=fuel_cost_krw,
         toll_krw=toll_krw,
         known_minimum_krw=sum(known) if known else None,
-        confidence="unknown",
+        status="unknown",
+        fuel_status=fuel_status if fuel_cost_krw is not None else "unknown",
+        toll_status=toll_status,
+        toll_mode=toll_mode if toll_krw is not None else "unknown",
+        toll_verified=toll_verified if toll_krw is not None else False,
+        reason=reason,
+    )
+
+
+def _fuel_status(fuel: FuelCostResult, fuel_cost_krw: int | None) -> str:
+    if fuel_cost_krw is None:
+        return "unknown"
+    if fuel.price is not None and fuel.price.source_status == "fresh":
+        return "verified"
+    if fuel.price is not None and fuel.price.source_status == "stale":
+        return "estimated"
+    return "unknown"
+
+
+def _toll_is_verified(toll: TollResult | None, amount_krw: int | None) -> bool:
+    return bool(
+        toll is not None
+        and toll.complete
+        and amount_krw is not None
+        and toll.source_status == "fresh"
+    )
+
+
+def _toll_mode(toll: TollResult | None, amount_krw: int | None) -> str:
+    if amount_krw is None:
+        return "unknown"
+    if toll is not None and toll.source_status == "stale":
+        return "stale_official"
+    return "verified_official"
+
+
+def _round_trip_toll(
+    *,
+    outbound_toll: TollResult,
+    return_toll: TollResult | None,
+    outbound_amount: int | None,
+    return_amount: int | None,
+    allow_estimate: bool,
+    reason: str | None,
+) -> tuple[int | None, str, bool, bool, str | None]:
+    """Build toll amount and explicit verification metadata for the aggregate."""
+
+    if outbound_amount is not None and return_amount is not None:
+        if (
+            outbound_toll.source_status == "stale"
+            or (return_toll is not None and return_toll.source_status == "stale")
+        ):
+            return (
+                outbound_amount + return_amount,
+                "stale_official",
+                False,
+                False,
+                "TOLL_STALE_CACHE",
+            )
+        return (
+            outbound_amount + return_amount,
+            "verified_official",
+            True,
+            False,
+            None,
+        )
+    if allow_estimate and outbound_amount is not None:
+        return (
+            outbound_amount * 2,
+            "estimated_doubled_outbound",
+            False,
+            True,
+            reason or "RETURN_TOLL_UNAVAILABLE",
+        )
+    return (
+        None,
+        "unknown",
+        False,
+        False,
+        reason
+        or (
+            return_toll.reason
+            if return_toll is not None and return_toll.reason
+            else outbound_toll.reason
+            or "TOLL_UNAVAILABLE"
+        ),
+    )
+
+
+def _log_cost_breakdown(
+    *,
+    outbound: DrivingCostLeg,
+    return_leg: DrivingCostLeg,
+    round_trip: DrivingCostLeg,
+    round_trip_toll_mode: str,
+) -> None:
+    LOGGER.info(
+        "driving_cost OUTBOUND route_id=%s distance_m=%s fuel_volume_l=%s "
+        "fuel_cost_krw=%s toll_krw=%s total_krw=%s",
+        outbound.route_id,
+        outbound.distance_m,
+        outbound.fuel_volume_l,
+        outbound.fuel_cost_krw,
+        outbound.toll_krw,
+        outbound.total_krw,
+    )
+    LOGGER.info(
+        "driving_cost RETURN route_id=%s distance_m=%s fuel_volume_l=%s "
+        "fuel_cost_krw=%s toll_krw=%s toll_mode=%s total_krw=%s",
+        return_leg.route_id,
+        return_leg.distance_m,
+        return_leg.fuel_volume_l,
+        return_leg.fuel_cost_krw,
+        return_leg.toll_krw,
+        return_leg.toll_mode,
+        return_leg.total_krw,
+    )
+    LOGGER.info(
+        "driving_cost ROUND_TRIP distance_m=%s fuel_volume_l=%s "
+        "fuel_cost_krw=%s toll_krw=%s toll_mode=%s total_krw=%s",
+        round_trip.distance_m,
+        round_trip.fuel_volume_l,
+        round_trip.fuel_cost_krw,
+        round_trip.toll_krw,
+        round_trip_toll_mode,
+        round_trip.total_krw,
     )
 
 
@@ -383,32 +538,28 @@ class DrivingCostService:
                 self.routing_client.route(request.destination, request.origin)
             )
 
-        outbound_toll_response, price = await asyncio.gather(
-            outbound_toll_task, price_task
-        )
-        outbound_toll = self._toll_result(outbound_toll_response)
-        reverse_route: RouteResult | None = None
-        reverse_route_error: Exception | None = None
-        if reverse_route_task is not None:
+        async def prefetch_return_toll():
+            """Start the reverse toll lookup as soon as reverse OSRM is ready."""
+
+            if reverse_route_task is None:
+                return None, None
             try:
                 reverse_route = await reverse_route_task
             except Exception as error:  # return route is diagnostic, not a fake cost
-                reverse_route_error = error
-                LOGGER.warning("Return OSRM route unavailable; using doubled one-way mode: %s", error)
-
-        reverse_mode = reverse_route is not None
-        if reverse_mode:
-            fuel = await self.fuel_service.calculate_with_price(
-                request,
-                price,
-                round_trip_distance_m=reverse_route.distance_m,
-                round_trip_distance_mode="reverse_route",
+                LOGGER.warning(
+                    "Return OSRM route unavailable; round trip remains incomplete: %s",
+                    error,
+                )
+                return None, None
+            return_route_id = reverse_route.route_id or make_route_id(
+                request.destination, request.origin, reverse_route
             )
+            return_route = reverse_route.model_copy(update={"route_id": return_route_id})
             return_request = DrivingCostRequest(
-                route_id=reverse_route.route_id,
+                route_id=return_route_id,
                 origin=request.destination,
                 destination=request.origin,
-                route=reverse_route,
+                route=return_route,
                 fuel_type=request.fuel_type,
                 fuel_efficiency_km_per_l=request.fuel_efficiency_km_per_l,
                 vehicle_class=request.vehicle_class,
@@ -417,102 +568,219 @@ class DrivingCostService:
             return_toll_response = await self.toll_calculator.calculate(
                 self._toll_request(return_request)
             )
-            return_toll = self._toll_result(return_toll_response)
-            return_toll_krw = return_toll.total_toll_krw if return_toll.complete else None
-            outbound_toll_krw = outbound_toll.total_toll_krw if outbound_toll.complete else None
-            one_way = _leg(
-                fuel_krw=fuel.one_way_krw,
-                toll_krw=outbound_toll_krw,
-                fuel=fuel,
-                toll=outbound_toll,
-            )
-            directional_toll_complete = (
-                outbound_toll_krw is not None and return_toll_krw is not None
-            )
-            if directional_toll_complete:
-                round_toll_krw = outbound_toll_krw + return_toll_krw
-                round_trip_toll_mode = "directional_official"
-                round_trip_toll_source = return_toll
-            else:
-                # The outbound official result is still useful for a
-                # transparent round-trip estimate when the reverse OSM
-                # journey has no provable official station pair.  Keep the
-                # failed reverse result in the response, advertise the
-                # fallback mode, and never synthesize an unknown toll as zero.
-                round_toll_krw = outbound_toll_krw * 2 if outbound_toll_krw is not None else None
-                round_trip_toll_mode = "doubled_one_way"
-                round_trip_toll_source = outbound_toll
-            round_trip = _leg(
-                fuel_krw=fuel.round_trip_krw,
-                toll_krw=round_toll_krw,
-                fuel=fuel,
-                toll=round_trip_toll_source if round_toll_krw is not None else None,
-            )
-            reason = None
-            if not directional_toll_complete and outbound_toll.complete:
-                reason = "RETURN_TOLL_UNAVAILABLE_USED_DOUBLED_ONE_WAY"
-            if not outbound_toll.complete:
-                reason = outbound_toll.reason or "TOLL_UNAVAILABLE"
-            elif not fuel.complete:
-                reason = fuel.reason.value if fuel.reason else "FUEL_PRICE_UNAVAILABLE"
-            result = DrivingCostResult(
-                complete=one_way.complete and round_trip.complete,
-                one_way=one_way,
-                round_trip=round_trip,
-                round_trip_distance_mode="reverse_route",
-                round_trip_toll_mode=round_trip_toll_mode,
-                reason=reason,
-            )
-            return DrivingCostResponse(
-                status="ok" if result.complete else "partial",
-                route=request.route,
-                toll=outbound_toll,
-                return_toll=return_toll,
-                fuel=fuel,
-                driving_cost=result,
-            )
+            return return_route, return_toll_response
 
-        # V0.5's explicitly supported fallback is a transparent doubled
-        # one-way estimate.  It is never used to convert an unavailable
-        # outbound toll or fuel price into zero.
-        fuel = await self.fuel_service.calculate_with_price(
-            request,
-            price,
-            round_trip_distance_mode="doubled_one_way",
+        # This task waits only for reverse OSRM and then immediately starts
+        # reverse toll matching.  The outbound toll and fuel-price tasks keep
+        # running independently, so a cold return lookup is no longer
+        # needlessly postponed behind the outbound source path.
+        return_toll_prefetch_task = (
+            asyncio.create_task(prefetch_return_toll())
+            if reverse_route_task is not None
+            else None
         )
+
+        try:
+            outbound_toll_response, price = await asyncio.gather(
+                outbound_toll_task, price_task
+            )
+        except BaseException:
+            cleanup_tasks = [task for task in (reverse_route_task, return_toll_prefetch_task) if task is not None]
+            for task in cleanup_tasks:
+                if not task.done():
+                    task.cancel()
+            if cleanup_tasks:
+                await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+            raise
+        outbound_toll = self._toll_result(outbound_toll_response)
+        reverse_route: RouteResult | None = None
+        return_toll_response = None
+        if return_toll_prefetch_task is not None:
+            try:
+                reverse_route, return_toll_response = await return_toll_prefetch_task
+            except Exception as error:  # return route is diagnostic, not a fake cost
+                LOGGER.warning(
+                    "Return toll lookup unavailable; round trip remains incomplete: %s",
+                    error,
+                )
+
         outbound_toll_krw = outbound_toll.total_toll_krw if outbound_toll.complete else None
-        round_toll_krw = outbound_toll_krw * 2 if outbound_toll_krw is not None else None
-        one_way = _leg(
-            fuel_krw=fuel.one_way_krw,
+        return_toll: TollResult | None = None
+        return_route: RouteResult | None = None
+        return_route_id: str | None = None
+        return_toll_krw: int | None = None
+        return_fuel_cost_krw: int | None = None
+        return_fuel_volume_l: float | None = None
+        return_distance_m: float | None = None
+        round_trip_distance_mode = "unknown"
+        round_trip_toll_reason_hint: str | None = None
+        reason: str | None = None
+
+        if request.round_trip_mode == "doubled_one_way":
+            # This is an explicit user-selected estimate, not a verified
+            # reverse route.  FuelCostCalculator uses outbound distance as the
+            # estimated return leg and the toll metadata says so explicitly.
+            fuel = await self.fuel_service.calculate_with_price(
+                request,
+                price,
+                round_trip_distance_mode="doubled_one_way",
+            )
+            round_trip_distance_mode = "doubled_one_way"
+            round_trip_toll_reason_hint = "RETURN_ROUTE_NOT_REQUESTED_ESTIMATED_DOUBLED_OUTBOUND"
+            if fuel.round_trip_complete:
+                return_distance_m = request.route.distance_m
+                return_fuel_volume_l = fuel.return_fuel_volume_l
+                return_fuel_cost_krw = fuel.return_fuel_cost_krw
+            reason = "RETURN_ROUTE_NOT_REQUESTED_ESTIMATED_DOUBLED_OUTBOUND"
+        elif reverse_route is not None:
+            return_route = reverse_route
+            return_route_id = reverse_route.route_id
+            fuel = await self.fuel_service.calculate_with_price(
+                request,
+                price,
+                round_trip_distance_m=return_route.distance_m,
+                round_trip_distance_mode="reverse_route",
+            )
+            round_trip_distance_mode = "reverse_route"
+            round_trip_toll_reason_hint = "RETURN_TOLL_UNAVAILABLE"
+            return_distance_m = return_route.distance_m
+            if fuel.round_trip_complete:
+                return_fuel_volume_l = fuel.return_fuel_volume_l
+                return_fuel_cost_krw = fuel.return_fuel_cost_krw
+            if return_toll_response is not None:
+                return_toll = self._toll_result(return_toll_response)
+                return_toll_krw = (
+                    return_toll.total_toll_krw if return_toll.complete else None
+                )
+        else:
+            fuel = await self.fuel_service.calculate_outbound_only_with_price(
+                request,
+                price,
+                reason="RETURN_ROUTE_UNAVAILABLE",
+            )
+            reason = "RETURN_ROUTE_UNAVAILABLE"
+
+        outbound_fuel_cost_krw = fuel.fuel_cost_krw if fuel.complete else None
+        outbound_fuel_volume_l = fuel.fuel_volume_l if fuel.complete else None
+        fuel_status = _fuel_status(fuel, outbound_fuel_cost_krw)
+
+        can_estimate_return_toll = request.round_trip_mode == "doubled_one_way" or (
+            reverse_route is not None
+        )
+        (
+            round_toll_krw,
+            round_trip_toll_mode,
+            round_trip_toll_verified,
+            round_trip_toll_estimated,
+            round_trip_toll_reason,
+        ) = _round_trip_toll(
+            outbound_toll=outbound_toll,
+            return_toll=return_toll,
+            outbound_amount=outbound_toll_krw,
+            return_amount=return_toll_krw,
+            allow_estimate=can_estimate_return_toll,
+            reason=round_trip_toll_reason_hint,
+        )
+        if round_trip_toll_estimated and reason is None:
+            reason = round_trip_toll_reason
+        if not outbound_toll.complete and reason is None:
+            reason = outbound_toll.reason or "TOLL_UNAVAILABLE"
+        if not fuel.complete and reason is None:
+            reason = fuel.reason.value if fuel.reason else "FUEL_PRICE_UNAVAILABLE"
+
+        outbound = _leg(
+            route_id=route_id,
+            distance_m=request.route.distance_m,
+            fuel_volume_l=outbound_fuel_volume_l,
+            fuel_cost_krw=outbound_fuel_cost_krw,
             toll_krw=outbound_toll_krw,
-            fuel=fuel,
-            toll=outbound_toll,
+            fuel_status=fuel_status,
+            toll_mode=_toll_mode(outbound_toll, outbound_toll_krw),
+            toll_verified=_toll_is_verified(outbound_toll, outbound_toll_krw),
+            reason=None if outbound_toll.complete and fuel.complete else reason,
+        )
+        return_toll_amount_for_leg = return_toll_krw
+        return_toll_mode_for_leg = _toll_mode(return_toll, return_toll_krw)
+        return_toll_verified_for_leg = _toll_is_verified(return_toll, return_toll_krw)
+        if return_toll_amount_for_leg is None and round_trip_toll_estimated and outbound_toll_krw is not None:
+            return_toll_amount_for_leg = outbound_toll_krw
+            return_toll_mode_for_leg = "estimated_doubled_outbound"
+            return_toll_verified_for_leg = False
+        return_leg = _leg(
+            route_id=return_route_id,
+            distance_m=return_distance_m,
+            fuel_volume_l=return_fuel_volume_l,
+            fuel_cost_krw=return_fuel_cost_krw,
+            toll_krw=return_toll_amount_for_leg,
+            fuel_status=fuel_status if return_fuel_cost_krw is not None else "unknown",
+            toll_mode=return_toll_mode_for_leg,
+            toll_verified=return_toll_verified_for_leg,
+            reason=round_trip_toll_reason if return_toll_amount_for_leg is not None and not return_toll_verified_for_leg else reason,
+        )
+
+        round_trip_has_all_fuel = (
+            outbound_fuel_cost_krw is not None
+            and return_fuel_cost_krw is not None
+            and outbound_fuel_volume_l is not None
+            and return_fuel_volume_l is not None
+            and return_distance_m is not None
         )
         round_trip = _leg(
-            fuel_krw=fuel.round_trip_krw,
+            route_id=None,
+            distance_m=(request.route.distance_m + return_distance_m) if round_trip_has_all_fuel else None,
+            fuel_volume_l=(outbound_fuel_volume_l + return_fuel_volume_l) if round_trip_has_all_fuel else None,
+            fuel_cost_krw=(outbound_fuel_cost_krw + return_fuel_cost_krw) if round_trip_has_all_fuel else None,
             toll_krw=round_toll_krw,
-            fuel=fuel,
-            toll=outbound_toll,
-        )
-        reason = None
-        if reverse_route_error is not None:
-            reason = "RETURN_ROUTE_UNAVAILABLE_USED_DOUBLED_ONE_WAY"
-        if not outbound_toll.complete:
-            reason = outbound_toll.reason or "TOLL_UNAVAILABLE"
-        if not fuel.complete:
-            reason = fuel.reason.value if fuel.reason else "FUEL_PRICE_UNAVAILABLE"
-        result = DrivingCostResult(
-            complete=one_way.complete and round_trip.complete,
-            one_way=one_way,
-            round_trip=round_trip,
-            round_trip_distance_mode="doubled_one_way",
-            round_trip_toll_mode="doubled_one_way",
+            fuel_status=fuel_status if round_trip_has_all_fuel else "unknown",
+            toll_mode=round_trip_toll_mode,
+            toll_verified=round_trip_toll_verified,
             reason=reason,
         )
+        round_trip_toll = RoundTripToll(
+            amount_krw=round_toll_krw,
+            mode=round_trip_toll_mode,
+            verified=round_trip_toll_verified,
+            estimated=round_trip_toll_estimated,
+            complete=round_trip_toll_verified,
+            reason=round_trip_toll_reason,
+        )
+        cost_complete = outbound.complete and return_leg.complete and round_trip.complete
+        officially_verified = (
+            cost_complete
+            and outbound.status == "verified"
+            and return_leg.status == "verified"
+            and round_trip.status == "verified"
+            and round_trip_toll.verified
+        )
+        contains_estimate = any(
+            leg.status == "estimated" for leg in (outbound, return_leg, round_trip)
+        ) or round_trip_toll.estimated
+        result = DrivingCostResult(
+            complete=cost_complete,
+            cost_complete=cost_complete,
+            outbound=outbound,
+            return_leg=return_leg,
+            round_trip=round_trip,
+            round_trip_toll=round_trip_toll,
+            officially_verified=officially_verified,
+            contains_estimate=contains_estimate,
+            round_trip_distance_mode=round_trip_distance_mode,
+            reason=reason,
+        )
+        _log_cost_breakdown(
+            outbound=outbound,
+            return_leg=return_leg,
+            round_trip=round_trip,
+            round_trip_toll_mode=round_trip_toll.mode,
+        )
         return DrivingCostResponse(
-            status="ok" if result.complete else "partial",
+            status="ok" if result.cost_complete else "partial",
             route=request.route,
+            outbound_route=request.route,
+            return_route=return_route,
             toll=outbound_toll,
+            outbound_toll=outbound_toll,
+            return_toll=return_toll,
             fuel=fuel,
             driving_cost=result,
         )

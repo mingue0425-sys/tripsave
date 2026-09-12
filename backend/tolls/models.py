@@ -96,6 +96,13 @@ class TollDiagnostics(BaseModel):
     official_entry: OfficialStationReference | None = None
     official_exit: OfficialStationReference | None = None
     official_lookup: Literal["not_started", "success", "failed", "cache"] = "not_started"
+    source_path: Literal["CACHE", "HTTP", "PLAYWRIGHT", "STALE_CACHE", "UNAVAILABLE"] = (
+        "UNAVAILABLE"
+    )
+    # Populated only when debug timing is enabled.  Keeping the field on the
+    # canonical diagnostics model makes stage timing machine-readable without
+    # changing the cost arithmetic or exposing a second debug API shape.
+    timings_ms: dict[str, float] = Field(default_factory=dict)
     request_events: list[dict[str, object]] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 

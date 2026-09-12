@@ -203,28 +203,34 @@
                   <h3 id="driving-cost-title">자동차 이동비</h3>
                 </div>
                 <dl id="driving-cost-metrics" class="driving-cost-metrics" hidden>
-                  <div>
-                    <dt>편도 유류비</dt>
-                    <dd id="cost-one-way-fuel">—</dd>
+                  <div class="cost-leg">
+                    <dt>가는 길</dt>
+                    <dd id="cost-outbound-distance">—</dd>
+                    <dt>유류비</dt>
+                    <dd id="cost-outbound-fuel">—</dd>
+                    <dt>통행료</dt>
+                    <dd id="cost-outbound-toll">—</dd>
+                    <dt>합계</dt>
+                    <dd id="cost-outbound-total">—</dd>
                   </div>
-                  <div>
-                    <dt>편도 통행료</dt>
-                    <dd id="cost-one-way-toll">—</dd>
+                  <div class="cost-leg">
+                    <dt>오는 길</dt>
+                    <dd id="cost-return-distance">—</dd>
+                    <dt>유류비</dt>
+                    <dd id="cost-return-fuel">—</dd>
+                    <dt>통행료</dt>
+                    <dd id="cost-return-toll">—</dd>
+                    <dt>합계</dt>
+                    <dd id="cost-return-total">—</dd>
                   </div>
-                  <div class="cost-total-row">
-                    <dt>편도 이동비</dt>
-                    <dd id="cost-one-way-total">—</dd>
-                  </div>
-                  <div>
-                    <dt>왕복 유류비</dt>
+                  <div class="cost-leg cost-leg--aggregate">
+                    <dt>왕복 합계</dt>
+                    <dd id="cost-round-trip-distance">—</dd>
+                    <dt>유류비</dt>
                     <dd id="cost-round-trip-fuel">—</dd>
-                  </div>
-                  <div>
-                    <dt>왕복 통행료</dt>
+                    <dt>통행료</dt>
                     <dd id="cost-round-trip-toll">—</dd>
-                  </div>
-                  <div class="cost-total-row">
-                    <dt>왕복 이동비</dt>
+                    <dt>합계</dt>
                     <dd id="cost-round-trip-total">—</dd>
                   </div>
                 </dl>

@@ -47,6 +47,14 @@ CREATE TABLE IF NOT EXISTS official_stations (
 CREATE INDEX IF NOT EXISTS idx_official_stations_normalized_name
     ON official_stations(normalized_name);
 
+CREATE TABLE IF NOT EXISTS official_station_directory (
+    directory_id INTEGER PRIMARY KEY CHECK (directory_id = 1),
+    stations_json TEXT NOT NULL,
+    collected_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    source_url TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS toll_road_ways (
     id INTEGER PRIMARY KEY,
     osm_id INTEGER NOT NULL UNIQUE,
@@ -94,6 +102,8 @@ CREATE INDEX IF NOT EXISTS idx_toll_rates_expiry
     ON toll_rates_cache(expires_at);
 CREATE INDEX IF NOT EXISTS idx_toll_rates_entry_exit
     ON toll_rates_cache(entry_normalized, exit_normalized, fetched_at);
+CREATE INDEX IF NOT EXISTS idx_toll_rates_official_pair
+    ON toll_rates_cache(entry_official_id, exit_official_id, fetched_at);
 
 CREATE TABLE IF NOT EXISTS fuel_prices_cache (
     cache_key TEXT PRIMARY KEY,
@@ -117,11 +127,20 @@ CREATE INDEX IF NOT EXISTS idx_fuel_prices_identity
 """
 
 
-def connect_database(path: str, *, read_only: bool = False) -> sqlite3.Connection:
+def connect_database(
+    path: str,
+    *,
+    read_only: bool = False,
+    check_same_thread: bool = True,
+) -> sqlite3.Connection:
     if read_only:
-        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        connection = sqlite3.connect(
+            f"file:{path}?mode=ro",
+            uri=True,
+            check_same_thread=check_same_thread,
+        )
     else:
-        connection = sqlite3.connect(path)
+        connection = sqlite3.connect(path, check_same_thread=check_same_thread)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection

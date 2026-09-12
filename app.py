@@ -1,5 +1,6 @@
-"""FastAPI entry point for Korea Trip Optimizer V0.5."""
+"""FastAPI entry point for Korea Trip Optimizer V0.5.1."""
 
+from contextlib import asynccontextmanager
 import logging
 
 from fastapi import FastAPI, Query, Request
@@ -53,7 +54,6 @@ from backend.tolls.service import TollCalculator
 LOGGER = logging.getLogger(__name__)
 
 
-app = FastAPI(title="Korea Trip Optimizer", version=APP_VERSION)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 routing_client = OSRMClient(
     base_url=OSRM_BASE_URL,
@@ -67,6 +67,23 @@ driving_cost_service = DrivingCostService(
     fuel_service=fuel_price_service,
     routing_client=routing_client,
 )
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Keep reusable toll clients alive, then close them on shutdown."""
+
+    try:
+        await toll_calculator.warmup()
+    except Exception as error:
+        # HTTP remains the primary source; a missing/unlaunchable browser must
+        # not prevent the local route/cost service from starting.
+        LOGGER.warning("Toll browser warm-up unavailable; fallback stays lazy: %s", error)
+    yield
+    await toll_calculator.close()
+
+
+app = FastAPI(title="Korea Trip Optimizer", version=APP_VERSION, lifespan=lifespan)
 
 # StaticFiles performs safe path handling. Basemap tiles are intentionally
 # fetched from the configured OpenFreeMap provider during development; this

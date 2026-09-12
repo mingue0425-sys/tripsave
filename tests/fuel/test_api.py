@@ -3,7 +3,14 @@ from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 from app import app, driving_cost_service, fuel_price_service
-from backend.fuel.models import DrivingCostResponse, FuelCostResult, FuelType
+from backend.fuel.models import (
+    DrivingCostLeg,
+    DrivingCostResponse,
+    DrivingCostResult,
+    FuelCostResult,
+    FuelType,
+    RoundTripToll,
+)
 
 from .helpers import make_route, make_toll
 
@@ -63,43 +70,82 @@ def test_fuel_api_keeps_unavailable_price_explicit(monkeypatch) -> None:
     assert body["fuel"].get("price_krw_per_l") is None
 
 
-def test_driving_cost_api_preserves_aggregate_shape(monkeypatch) -> None:
+def test_driving_cost_api_exposes_canonical_aggregate_shape(monkeypatch) -> None:
     async def aggregate(request):
         origin, destination, route = make_route(distance_m=100_000.0)
         from .helpers import make_price
         from backend.fuel.calculator import FuelCostCalculator
-        from backend.fuel.service import _leg
-
         fuel = FuelCostCalculator.calculate(
             distance_m=route.distance_m,
             fuel_efficiency_km_per_l=request.fuel_efficiency_km_per_l,
             price=make_price(),
         )
-        toll = make_toll(total=17_500)
-        leg = _leg(
-            fuel_krw=fuel.one_way_krw,
-            toll_krw=toll.total_toll_krw,
-            fuel=fuel,
-            toll=toll,
+        outbound_toll = make_toll(total=17_500)
+        return_toll = make_toll(total=17_500)
+        outbound = DrivingCostLeg(
+            complete=True,
+            route_id=route.route_id or "route-test",
+            distance_m=route.distance_m,
+            fuel_volume_l=fuel.fuel_volume_l,
+            fuel_cost_krw=fuel.fuel_cost_krw,
+            toll_krw=outbound_toll.total_toll_krw,
+            total_krw=fuel.fuel_cost_krw + outbound_toll.total_toll_krw,
+            status="verified",
+            fuel_status="verified",
+            toll_status="verified",
+            toll_mode="verified_official",
+            toll_verified=True,
+        )
+        return_leg = DrivingCostLeg(
+            complete=True,
+            route_id="return-route",
+            distance_m=fuel.return_distance_km * 1000,
+            fuel_volume_l=fuel.return_fuel_volume_l,
+            fuel_cost_krw=fuel.return_fuel_cost_krw,
+            toll_krw=return_toll.total_toll_krw,
+            total_krw=fuel.return_fuel_cost_krw + return_toll.total_toll_krw,
+            status="verified",
+            fuel_status="verified",
+            toll_status="verified",
+            toll_mode="verified_official",
+            toll_verified=True,
+        )
+        round_trip = DrivingCostLeg(
+            complete=True,
+            distance_m=route.distance_m + fuel.return_distance_km * 1000,
+            fuel_volume_l=fuel.fuel_volume_l + fuel.return_fuel_volume_l,
+            fuel_cost_krw=fuel.round_trip_fuel_cost_krw,
+            toll_krw=35_000,
+            total_krw=fuel.round_trip_fuel_cost_krw + 35_000,
+            status="verified",
+            fuel_status="verified",
+            toll_status="verified",
+            toll_mode="verified_official",
+            toll_verified=True,
         )
         return DrivingCostResponse(
             status="ok",
             route=route,
-            toll=toll,
+            toll=outbound_toll,
+            outbound_toll=outbound_toll,
+            return_toll=return_toll,
             fuel=fuel,
-            driving_cost={
-                "complete": True,
-                "one_way": leg,
-                "round_trip": leg.model_copy(
-                    update={
-                        "fuel_krw": fuel.round_trip_krw,
-                        "toll_krw": 35_000,
-                        "total_krw": fuel.round_trip_krw + 35_000,
-                    }
+            driving_cost=DrivingCostResult(
+                complete=True,
+                cost_complete=True,
+                outbound=outbound,
+                return_leg=return_leg,
+                round_trip=round_trip,
+                round_trip_toll=RoundTripToll(
+                    amount_krw=35_000,
+                    mode="verified_official",
+                    verified=True,
+                    complete=True,
                 ),
-                "round_trip_distance_mode": "doubled_one_way",
-                "round_trip_toll_mode": "doubled_one_way",
-            },
+                officially_verified=True,
+                contains_estimate=False,
+                round_trip_distance_mode="doubled_one_way",
+            ),
         )
 
     monkeypatch.setattr(driving_cost_service, "calculate", aggregate)
@@ -110,4 +156,13 @@ def test_driving_cost_api_preserves_aggregate_shape(monkeypatch) -> None:
     assert body["status"] == "ok"
     assert body["fuel"]["fuel_type"] == FuelType.GASOLINE.value
     assert body["toll"]["total_toll_krw"] == 17_500
-    assert body["driving_cost"]["one_way"]["total_krw"] == 34_500
+    assert body["driving_cost"]["outbound"]["total_krw"] == 34_500
+    assert body["driving_cost"]["return"]["total_krw"] == 34_500
+    assert body["driving_cost"]["round_trip"]["fuel_cost_krw"] == 34_000
+    assert body["driving_cost"]["round_trip"]["total_krw"] == 69_000
+    assert body["driving_cost"]["round_trip"]["total_krw"] == (
+        body["driving_cost"]["outbound"]["total_krw"]
+        + body["driving_cost"]["return"]["total_krw"]
+    )
+    assert "one_way" not in body["driving_cost"]
+    assert "return_cost" not in body["driving_cost"]

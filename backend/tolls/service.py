@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,14 +38,19 @@ from backend.tolls.official import (
     OfficialStationStore,
     OfficialTollError,
     OfficialTollLookup,
+    OfficialTollParserError,
     OfficialTollStationNotFoundError,
 )
 from config import (
     OFFICIAL_TOLL_URL,
     TOLL_CACHE_TTL_DAYS,
+    TOLL_FAILURE_COOLDOWN_S,
+    TOLL_BROWSER_WARMUP,
     TOLL_INDEX_DB,
     TOLL_MAX_OFFICIAL_DISTANCE_MISMATCH_M,
     TOLL_MAX_OFFICIAL_DISTANCE_MISMATCH_RATIO,
+    TOLL_STALE_MAX_AGE_DAYS,
+    TOLL_DEBUG_MODE,
 )
 
 
@@ -62,25 +68,44 @@ class TollCalculator:
         crawler: KoreaExpresswayTollCrawler | None = None,
     ) -> None:
         self.index = TollIndex(index_path)
-        self.cache = cache or TollRateCache(index_path, ttl_days=TOLL_CACHE_TTL_DAYS)
+        self.cache = cache or TollRateCache(
+            index_path,
+            ttl_days=TOLL_CACHE_TTL_DAYS,
+            stale_max_age_days=TOLL_STALE_MAX_AGE_DAYS,
+        )
         self.crawler = crawler or KoreaExpresswayTollCrawler(
             source_url=OFFICIAL_TOLL_URL,
             station_store=OfficialStationStore(index_path),
         )
         self._lookup_lock = asyncio.Lock()
+        self._inflight_lock = asyncio.Lock()
+        self._inflight: dict[str, asyncio.Task] = {}
+        self._refresh_lock = asyncio.Lock()
+        self._refresh_inflight: dict[str, asyncio.Task] = {}
+        self._background_tasks: set[asyncio.Task] = set()
+        self._failure_cooldown: dict[str, tuple[float, str]] = {}
         self.metrics: Counter[str] = Counter()
         self._debug_by_route: dict[str, TollDiagnostics] = {}
+        self.last_lookup_diagnostics: dict[str, object] = {}
 
     async def status(self) -> dict[str, object]:
         ready = self.index.ready
         result: dict[str, object] = {
             "status": "ready" if ready else "unavailable",
-            "engine": "osm+tollgate-index+official-web-browser-first",
+            "engine": "osm+tollgate-index+official-web-http-primary",
             "profile": "car",
             "local_index": ready,
             "official_source": OFFICIAL_TOLL_URL,
-            "source_policy": "playwright_normal_html_first",
+            "source_policy": "cache+verified-http+playwright-fallback",
+            "cache_ttl_days": getattr(self.cache, "ttl", None).days
+            if getattr(self.cache, "ttl", None) is not None
+            else TOLL_CACHE_TTL_DAYS,
+            "stale_max_age_days": getattr(self.cache, "stale_max_age", None).days
+            if getattr(self.cache, "stale_max_age", None) is not None
+            else TOLL_STALE_MAX_AGE_DAYS,
+            "failure_cooldown_s": TOLL_FAILURE_COOLDOWN_S,
             "metrics": dict(self.metrics),
+            "last_lookup": dict(self.last_lookup_diagnostics),
         }
         if not ready:
             result["message"] = (
@@ -88,6 +113,30 @@ class TollCalculator:
                 "Run scripts/build_tollgate_index.py."
             )
         return result
+
+    async def close(self) -> None:
+        """Cancel refresh work and release index/source resources."""
+
+        tasks = list(self._background_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        close = getattr(self.crawler, "close", None)
+        if close is not None:
+            await close()
+        close_index = getattr(self.index, "close", None)
+        if close_index is not None:
+            close_index()
+
+    async def warmup(self) -> None:
+        """Warm optional fallback resources without crawling an official page."""
+
+        if not TOLL_BROWSER_WARMUP:
+            return
+        warmup = getattr(self.crawler, "warmup_browser", None)
+        if warmup is not None:
+            await warmup()
 
     def debug(self, route_id: str) -> dict[str, object] | None:
         diagnostics = self._debug_by_route.get(route_id)
@@ -252,7 +301,124 @@ class TollCalculator:
             diagnostics=diagnostics or TollDiagnostics(),
         )
 
-    async def _lookup_with_cache(
+    @staticmethod
+    def _pair_names(
+        pair: tuple[object, object], fallback_entry: str, fallback_exit: str
+    ) -> tuple[str, str]:
+        candidate_entry, candidate_exit = pair
+        entry_gate = getattr(candidate_entry, "gate", candidate_entry)
+        exit_gate = getattr(candidate_exit, "gate", candidate_exit)
+        return (
+            getattr(entry_gate, "name", None) or fallback_entry,
+            getattr(exit_gate, "name", None) or fallback_exit,
+        )
+
+    def _pair_flight_key(
+        self,
+        entry_name: str,
+        exit_name: str,
+        pairs: list[tuple[object, object]],
+    ) -> str:
+        first_entry, first_exit = self._pair_names(pairs[0], entry_name, exit_name)
+        entry_gate = getattr(pairs[0][0], "gate", pairs[0][0])
+        exit_gate = getattr(pairs[0][1], "gate", pairs[0][1])
+        entry_id = getattr(entry_gate, "official_id", None)
+        exit_id = getattr(exit_gate, "official_id", None)
+        if entry_id is None or exit_id is None:
+            try:
+                entry_id = entry_id or self.cache.resolve_official_id(first_entry)
+                exit_id = exit_id or self.cache.resolve_official_id(first_exit)
+            except TollCacheError:
+                # A cache read failure must not turn a valid source lookup
+                # into an error; normalized official names remain safe keys.
+                pass
+        return "|".join(
+            [
+                str(entry_id or normalize_toll_name(official_query_name(first_entry))),
+                str(exit_id or normalize_toll_name(official_query_name(first_exit))),
+            ]
+        )
+
+    async def _run_shared_lookup(self, key: str, operation):
+        try:
+            return await operation
+        finally:
+            current = asyncio.current_task()
+            async with self._inflight_lock:
+                if self._inflight.get(key) is current:
+                    self._inflight.pop(key, None)
+
+    async def _run_refresh_lookup(self, key: str, operation) -> None:
+        try:
+            await operation
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("Background toll cache refresh failed key=%s", key)
+        finally:
+            current = asyncio.current_task()
+            async with self._refresh_lock:
+                if self._refresh_inflight.get(key) is current:
+                    self._refresh_inflight.pop(key, None)
+
+    def _track_background_task(self, task: asyncio.Task) -> None:
+        self._background_tasks.add(task)
+
+        def done(completed: asyncio.Task) -> None:
+            self._background_tasks.discard(completed)
+            if completed.cancelled():
+                return
+            try:
+                completed.exception()
+            except Exception:
+                LOGGER.exception("Background toll task inspection failed")
+
+        task.add_done_callback(done)
+
+    def _cooldown_failure_code(self, key: str) -> str | None:
+        entry = self._failure_cooldown.get(key)
+        if entry is None:
+            return None
+        expires_at, code = entry
+        if expires_at > time.monotonic():
+            self.metrics["failure_cooldown_hit"] += 1
+            return code
+        self._failure_cooldown.pop(key, None)
+        return None
+
+    async def _schedule_refresh(
+        self,
+        key: str,
+        entry_name: str,
+        exit_name: str,
+        *,
+        entry_gate,
+        exit_gate,
+        candidate_pairs: list[tuple[object, object]],
+        route_distance_m: float | None = None,
+    ) -> None:
+        async with self._refresh_lock:
+            if key in self._refresh_inflight:
+                return
+            task = asyncio.create_task(
+                self._run_refresh_lookup(
+                    key,
+                    self._lookup_with_cache_uncached(
+                        entry_name,
+                        exit_name,
+                        entry_gate=entry_gate,
+                        exit_gate=exit_gate,
+                        candidate_pairs=candidate_pairs,
+                        flight_key=key,
+                        route_distance_m=route_distance_m,
+                        allow_stale_result=False,
+                    ),
+                )
+            )
+            self._refresh_inflight[key] = task
+            self._track_background_task(task)
+
+    async def _lookup_with_cache_uncached(
         self,
         entry_name: str,
         exit_name: str,
@@ -260,6 +426,9 @@ class TollCalculator:
         entry_gate=None,
         exit_gate=None,
         candidate_pairs: list[tuple[object, object]] | None = None,
+        flight_key: str,
+        route_distance_m: float | None = None,
+        allow_stale_result: bool = True,
     ) -> tuple[
         OfficialTollLookup | None,
         str,
@@ -271,13 +440,6 @@ class TollCalculator:
     ]:
         pairs = candidate_pairs or [(entry_gate, exit_gate)]
 
-        def pair_names(pair: tuple[object, object]) -> tuple[str, str]:
-            candidate_entry, candidate_exit = pair
-            return (
-                getattr(candidate_entry, "gate", candidate_entry).name or entry_name,
-                getattr(candidate_exit, "gate", candidate_exit).name or exit_name,
-            )
-
         async def cached_candidate(
             *, allow_stale: bool,
         ) -> tuple[
@@ -287,18 +449,46 @@ class TollCalculator:
             object | None,
             object | None,
         ]:
-            for pair in pairs:
-                candidate_entry_name, candidate_exit_name = pair_names(pair)
+            pair_names = [
+                self._pair_names(pair, entry_name, exit_name) for pair in pairs
+            ]
+            get_many = getattr(self.cache, "get_many", None)
+            if get_many is not None:
                 try:
-                    cached = self.cache.get(
-                        candidate_entry_name,
-                        candidate_exit_name,
-                        allow_stale=allow_stale,
-                    )
+                    cached_values = get_many(pair_names, allow_stale=allow_stale)
                 except TollCacheError as error:
-                    LOGGER.warning("Toll cache read failed: %s", error)
-                    continue
+                    LOGGER.warning("Toll cache batch read failed: %s", error)
+                    cached_values = [None] * len(pairs)
+            else:
+                # Keep small test doubles and older integrations compatible
+                # with the original one-pair cache protocol.
+                cached_values = []
+                for candidate_entry_name, candidate_exit_name in pair_names:
+                    try:
+                        cached_values.append(
+                            self.cache.get(
+                                candidate_entry_name,
+                                candidate_exit_name,
+                                allow_stale=allow_stale,
+                            )
+                        )
+                    except TollCacheError as error:
+                        LOGGER.warning("Toll cache read failed: %s", error)
+                        cached_values.append(None)
+
+            for pair, cached in zip(pairs, cached_values):
                 if cached is not None:
+                    if (
+                        route_distance_m is not None
+                        and not self._distance_is_consistent(
+                            route_distance_m, cached.lookup
+                        )
+                    ):
+                        # A name/alias cache hit is not enough evidence for a
+                        # route.  Do not reuse a valid but shorter/different
+                        # official pair for this journey direction.
+                        self.metrics["cache_rejected_distance_mismatch"] += 1
+                        continue
                     return (
                         cached.lookup,
                         "fresh" if cached.fresh else "stale",
@@ -318,12 +508,45 @@ class TollCalculator:
                 cached_status,
                 cached_fetched_at,
                 None,
-                "cache",
+                "CACHE",
                 cached_entry,
                 cached_exit,
             )
 
         self.metrics["cache_miss"] += 1
+        stale_lookup, stale_status, stale_fetched_at, stale_entry, stale_exit = (
+            await cached_candidate(allow_stale=True)
+        )
+        if stale_lookup is not None and allow_stale_result:
+            self.metrics["stale_cache_used"] += 1
+            self.metrics["stale_refresh_scheduled"] += 1
+            await self._schedule_refresh(
+                flight_key,
+                entry_name,
+                exit_name,
+                entry_gate=entry_gate,
+                exit_gate=exit_gate,
+                candidate_pairs=pairs,
+                route_distance_m=route_distance_m,
+            )
+            return (
+                stale_lookup,
+                stale_status,
+                stale_fetched_at,
+                None,
+                "STALE_CACHE",
+                stale_entry,
+                stale_exit,
+            )
+
+        # A bounded negative result is deliberately different from a toll
+        # cache entry: it contains no amount and therefore cannot turn an
+        # unknown segment into free travel.  It only suppresses repeated
+        # HTTP+browser attempts while a transient/unsupported pair cools down.
+        cooldown_code = self._cooldown_failure_code(flight_key)
+        if cooldown_code is not None:
+            return None, "unavailable", None, cooldown_code, "UNAVAILABLE", None, None
+
         async with self._lookup_lock:
             fresh_lookup, fresh_status, fresh_fetched_at, fresh_entry, fresh_exit = (
                 await cached_candidate(allow_stale=False)
@@ -335,17 +558,16 @@ class TollCalculator:
                     fresh_status,
                     fresh_fetched_at,
                     None,
-                    "cache",
+                    "CACHE",
                     fresh_entry,
                     fresh_exit,
                 )
 
-            stale_lookup, stale_status, stale_fetched_at, stale_entry, stale_exit = (
-                await cached_candidate(allow_stale=True)
-            )
             last_error: OfficialTollError | None = None
             for pair in pairs:
-                candidate_entry_name, candidate_exit_name = pair_names(pair)
+                candidate_entry_name, candidate_exit_name = self._pair_names(
+                    pair, entry_name, exit_name
+                )
                 candidate_entry_gate = getattr(pair[0], "gate", pair[0])
                 candidate_exit_gate = getattr(pair[1], "gate", pair[1])
                 try:
@@ -362,6 +584,20 @@ class TollCalculator:
                             candidate_entry_name,
                             candidate_exit_name
                         )
+                    if (
+                        route_distance_m is not None
+                        and not self._distance_is_consistent(route_distance_m, lookup)
+                    ):
+                        # The official site can return a valid short sub-route
+                        # for an early OSM candidate.  It is not the requested
+                        # journey; continue with the next route-progress pair
+                        # instead of caching or exposing that amount as the
+                        # full-route toll.
+                        self.metrics["source_rejected_distance_mismatch"] += 1
+                        last_error = OfficialTollParserError(
+                            "The official result distance did not match the requested route."
+                        )
+                        continue
                     try:
                         # Persist the canonical official names plus IDs.  The
                         # returned IDs remain the cache identity even when the
@@ -371,16 +607,23 @@ class TollCalculator:
                             lookup.entry_name,
                             lookup.exit_name,
                             lookup,
+                            entry_official_id=lookup.entry_official_id,
+                            exit_official_id=lookup.exit_official_id,
                         )
                     except TollCacheError as error:
                         LOGGER.warning("Toll cache write failed: %s", error)
+                    source_path = getattr(self.crawler, "last_source_path", "HTTP")
+                    if source_path not in {"HTTP", "PLAYWRIGHT"}:
+                        source_path = "HTTP"
+                    self.metrics[f"source_{source_path.casefold()}_success"] += 1
                     self.metrics["crawl_success"] += 1
+                    self._failure_cooldown.pop(flight_key, None)
                     return (
                         lookup,
                         "fresh",
                         lookup.fetched_at,
                         None,
-                        "browser",
+                        source_path,
                         pair[0],
                         pair[1],
                     )
@@ -396,19 +639,69 @@ class TollCalculator:
                     break
 
             self.metrics["crawl_failure"] += 1
-            if stale_lookup is not None and last_error is not None:
-                self.metrics["stale_cache_used"] += 1
+            error_code = (
+                last_error.code if last_error is not None else "OFFICIAL_REQUEST_FAILED"
+            )
+            if TOLL_FAILURE_COOLDOWN_S > 0:
+                self._failure_cooldown[flight_key] = (
+                    time.monotonic() + TOLL_FAILURE_COOLDOWN_S,
+                    error_code,
+                )
+            if stale_lookup is not None:
+                self.metrics["stale_cache_used_after_failure"] += 1
                 return (
                     stale_lookup,
                     stale_status,
                     stale_fetched_at,
-                    last_error.code,
-                    "stale_cache",
+                    last_error.code if last_error is not None else None,
+                    "STALE_CACHE",
                     stale_entry,
                     stale_exit,
                 )
-            error_code = last_error.code if last_error is not None else "OFFICIAL_REQUEST_FAILED"
-            return None, "unavailable", None, error_code, "failed", None, None
+            return None, "unavailable", None, error_code, "UNAVAILABLE", None, None
+
+    async def _lookup_with_cache(
+        self,
+        entry_name: str,
+        exit_name: str,
+        *,
+        entry_gate=None,
+        exit_gate=None,
+        candidate_pairs: list[tuple[object, object]] | None = None,
+        route_distance_m: float | None = None,
+    ) -> tuple[
+        OfficialTollLookup | None,
+        str,
+        datetime | None,
+        str | None,
+        str,
+        object | None,
+        object | None,
+    ]:
+        pairs = candidate_pairs or [(entry_gate, exit_gate)]
+        key = self._pair_flight_key(entry_name, exit_name, pairs)
+        async with self._inflight_lock:
+            task = self._inflight.get(key)
+            if task is None:
+                task = asyncio.create_task(
+                    self._run_shared_lookup(
+                        key,
+                        self._lookup_with_cache_uncached(
+                            entry_name,
+                            exit_name,
+                            entry_gate=entry_gate,
+                            exit_gate=exit_gate,
+                            candidate_pairs=pairs,
+                            flight_key=key,
+                            route_distance_m=route_distance_m,
+                        ),
+                    )
+                )
+                self._inflight[key] = task
+                self.metrics["singleflight_owner"] += 1
+            else:
+                self.metrics["singleflight_waiter"] += 1
+        return await asyncio.shield(task)
 
     @staticmethod
     def _source_failure_code(value: str | None) -> str:
@@ -654,11 +947,22 @@ class TollCalculator:
 
         coordinates = [tuple(point) for point in request.route.geometry.coordinates]
         route_distance_m = request.route.distance_m
+        analysis_started = time.perf_counter()
         try:
             analysis = self.index.analyze_route(coordinates)
         except TollIndexUnavailableError as error:
             self.metrics["index_unavailable"] += 1
             raise TollIndexServiceUnavailableError(str(error)) from error
+        analysis_ms = round((time.perf_counter() - analysis_started) * 1000, 2)
+        if TOLL_DEBUG_MODE:
+            diagnostics = diagnostics.model_copy(
+                update={
+                    "timings_ms": {
+                        "tg_analysis_ms": analysis_ms,
+                        **getattr(self.index, "last_timings", {}),
+                    }
+                }
+            )
 
         raw_candidates = list(analysis.raw_candidates or analysis.gates)
         logical_gates = list(analysis.gates)
@@ -841,11 +1145,21 @@ class TollCalculator:
         )
 
         browser_client = getattr(self.crawler, "browser_client", None)
-        if browser_client is not None and hasattr(browser_client, "last_request_events"):
-            # Do not attach a previous request's network trace to a cache hit.
-            browser_client.last_request_events = []
+        http_client = getattr(self.crawler, "http_client", None)
+        for source_client in (browser_client, http_client, self.crawler):
+            if source_client is not None and hasattr(source_client, "last_request_events"):
+                # Do not attach a previous request's network trace to a cache hit.
+                source_client.last_request_events = []
+            if source_client is not None and hasattr(source_client, "last_timings"):
+                # Timing metadata is request-scoped.  Keeping an earlier HTTP
+                # sample here made a later CACHE response look as if it had
+                # paid the old network latency.
+                source_client.last_timings = {}
+            if source_client is not None and hasattr(source_client, "last_result_route_labels"):
+                source_client.last_result_route_labels = []
         lookup_entry_name = entry_gate.name or entry_name
         lookup_exit_name = exit_gate.name or exit_name
+        lookup_started = time.perf_counter()
         (
             lookup,
             source_status,
@@ -860,9 +1174,13 @@ class TollCalculator:
             entry_gate=entry_gate,
             exit_gate=exit_gate,
             candidate_pairs=candidate_pairs,
+            route_distance_m=route_distance_m,
         )
-        request_events = getattr(
-            browser_client, "last_request_events", []
+        lookup_ms = round((time.perf_counter() - lookup_started) * 1000, 2)
+        request_events = (
+            []
+            if lookup_origin in {"CACHE", "STALE_CACHE"}
+            else list(getattr(self.crawler, "last_request_events", []))
         )
         if request_events:
             diagnostics = diagnostics.model_copy(update={"request_events": request_events[-300:]})
@@ -871,6 +1189,23 @@ class TollCalculator:
             diagnostics = diagnostics.model_copy(
                 update={"official_station_count": int(station_count)}
             )
+        if TOLL_DEBUG_MODE:
+            source_timings = dict(getattr(self.crawler, "last_timings", {}))
+            diagnostics = diagnostics.model_copy(
+                update={
+                    "timings_ms": {
+                        **diagnostics.timings_ms,
+                        "toll_lookup_ms": lookup_ms,
+                        **source_timings,
+                    }
+                }
+            )
+        self.last_lookup_diagnostics = {
+            "source_path": lookup_origin,
+            "cache_status": source_status,
+            "duration_ms": lookup_ms,
+            "source_timings_ms": dict(getattr(self.crawler, "last_timings", {})),
+        }
         if lookup is None:
             self.metrics["official_lookup_failure"] += 1
             code = self._source_failure_code(source_error)
@@ -927,7 +1262,14 @@ class TollCalculator:
         )
         diagnostics = diagnostics.model_copy(
             update={
-                "official_lookup": "cache" if lookup_origin != "browser" else "success",
+                "official_lookup": (
+                    "cache"
+                    if lookup_origin in {"CACHE", "STALE_CACHE"}
+                    else "success"
+                ),
+                "source_path": lookup_origin
+                if lookup_origin in {"CACHE", "HTTP", "PLAYWRIGHT", "STALE_CACHE"}
+                else "UNAVAILABLE",
                 "official_entry": entry_ref,
                 "official_exit": exit_ref,
             }
