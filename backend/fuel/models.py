@@ -232,9 +232,12 @@ class DrivingCostLeg(BaseModel):
     status: Literal["verified", "estimated", "unknown"] = "unknown"
     fuel_status: Literal["verified", "estimated", "unknown"] = "unknown"
     toll_status: Literal["verified", "estimated", "unknown"] = "unknown"
-    toll_mode: Literal["verified_official", "estimated_doubled_outbound", "unknown"] = (
-        "unknown"
-    )
+    toll_mode: Literal[
+        "verified_official",
+        "stale_official",
+        "estimated_doubled_outbound",
+        "unknown",
+    ] = "unknown"
     toll_verified: bool = False
     reason: str | None = Field(default=None, max_length=200)
 
@@ -303,7 +306,12 @@ class RoundTripToll(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     amount_krw: int | None = Field(default=None, strict=True, ge=0)
-    mode: Literal["verified_official", "estimated_doubled_outbound", "unknown"] = "unknown"
+    mode: Literal[
+        "verified_official",
+        "stale_official",
+        "estimated_doubled_outbound",
+        "unknown",
+    ] = "unknown"
     verified: bool = False
     estimated: bool = False
     complete: bool = False
@@ -318,6 +326,9 @@ class RoundTripToll(BaseModel):
                 raise ValueError("A verified round-trip toll needs an official amount.")
         elif self.mode == "verified_official":
             raise ValueError("verified_official mode requires verified=true.")
+        elif self.mode == "stale_official":
+            if self.amount_krw is None or self.estimated or self.complete:
+                raise ValueError("A stale official toll is not current verification.")
         if self.estimated:
             if self.amount_krw is None or self.mode != "estimated_doubled_outbound" or self.verified:
                 raise ValueError("An estimated toll needs explicit doubled-outbound metadata.")

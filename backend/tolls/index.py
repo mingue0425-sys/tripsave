@@ -7,6 +7,7 @@ import logging
 import math
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 from backend.tolls.matcher import (
@@ -54,6 +55,7 @@ class TollIndex:
         self._connections: dict[int, sqlite3.Connection] = {}
         self._connection_lock = threading.RLock()
         self._gates: list[TollGate] | None = None
+        self.last_timings: dict[str, float] = {}
 
     @property
     def ready(self) -> bool:
@@ -223,12 +225,14 @@ class TollIndex:
             raise TollIndexUnavailableError(
                 "Local OSM toll index is not ready. Run the toll index setup procedure."
             )
+        gate_started = time.perf_counter()
         gates, raw_candidates = match_toll_gates_detailed(
             route_coordinates,
             self.gates(),
             threshold_m=gate_threshold_m,
             deduplication_threshold_m=gate_deduplication_threshold_m,
         )
+        gate_ms = round((time.perf_counter() - gate_started) * 1000, 2)
         route_length_m = sum(
             coordinate_distance_meters(first, second)
             for first, second in zip(route_coordinates, route_coordinates[1:])
@@ -269,7 +273,13 @@ class TollIndex:
             len(gates),
             sum(1 for gate in gates if gate.duplicate_count > 1),
         )
+        road_started = time.perf_counter()
         roads = self._nearby_toll_roads(route_coordinates, road_threshold_m)
+        road_ms = round((time.perf_counter() - road_started) * 1000, 2)
+        self.last_timings = {
+            "gate_match_and_dedup_ms": gate_ms,
+            "road_match_ms": road_ms,
+        }
         supported_operator_evidence = any(
             road.operator and _is_supported_operator(road.operator) for road in roads
         ) or any(

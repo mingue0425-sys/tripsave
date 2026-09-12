@@ -173,11 +173,14 @@ python -m playwright install chromium
 python -m pytest -q -m official
 ```
 
-The official adapter is browser-first. It loads the public station popup,
-collects the canonical station dictionary, validates the selected names with
-the page's normal station-check flow, submits the HTML form, and parses the
-resulting route table. The returned `nosunCd` station IDs are stored with the
-price cache; raw OSM gate names are not used as the cache identity. Set
+The official adapter is HTTP-first. It reproduces the observed public flow:
+initial HTML, `pathCheckN.do` station validation, the canonical HTML form
+submission, and route-table parsing. It validates status, content type,
+redirect host, entry/exit identity, all vehicle prices, and official distance.
+The returned `nosunCd` station IDs are stored with the full directional pair
+price table; raw OSM gate names are only a first-read alias. A validated HTTP
+failure can use the pooled Playwright browser fallback, while an explicit
+access/robots denial is not bypassed. Set
 `KTO_TOLL_BROWSER_EXECUTABLE_PATH` only when a deployment needs to point
 Playwright at an already installed Chromium binary.
 
@@ -352,16 +355,19 @@ GET  /api/tolls/debug/{route_id}  (only when KTO_DEBUG=1)
 ```
 
 The backend matches the canonical OSRM route against local OSM evidence and,
-when the journey is supported, uses Playwright to submit the normal public
-HTML form to the
+when the journey is supported, uses the verified HTTP flow to query the
+normal public HTML form at
 [한국도로공사 통행요금조회 페이지](https://www.ex.co.kr/portal/usefee/selectUseFeeNList.do).
 It uses the official entry/exit result as the journey total; it never sums
-individual gate prices. The source adapter uses bounded navigation/selector/
-result timeouts, a low-concurrency lock, and a 30-day SQLite cache. Station
-matching and browser request/response evidence are retained in development
-diagnostics; optional screenshots and a result HTML fragment are written only
-when `KTO_TOLL_DEBUG_ARTIFACTS=1`. It does not use an OpenAPI endpoint, a
-private API, or an alternative public service.
+individual gate prices. The source adapter uses a reusable HTTP connection
+pool, pair-level full vehicle-price caching with a 30-day fresh TTL and a
+180-day bounded stale-usable window, keyed single-flight, and a pooled
+Playwright fallback. Stale values are returned immediately with their last
+official timestamp while refresh runs in the background. Station mapping and
+HTTP/browser request evidence are retained in development diagnostics;
+optional screenshots and a result HTML fragment are written only when
+`KTO_TOLL_DEBUG_ARTIFACTS=1`. It does not use an OpenAPI endpoint, a private
+API, or an alternative public service.
 
 The supported authoritative operator in V0.4 is 한국도로공사. A mixed corridor
 is not rejected merely because an adjacent or connected OSM way has another

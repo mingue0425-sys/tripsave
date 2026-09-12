@@ -10,6 +10,10 @@
     route: null,
   };
   let activeController = null;
+  let prefetchController = null;
+  let prefetchTimer = null;
+  let prefetchGeneration = 0;
+  let prefetchState = null;
   let latestSelection = { origin: null, destination: null };
 
   const fuelLabels = Object.freeze({
@@ -106,12 +110,61 @@
     };
   }
 
+  function costKey(route, selection, nextEfficiency) {
+    if (!route || !selection.origin || !selection.destination) {
+      return null;
+    }
+    return [
+      route.route_id || "",
+      selectionFingerprint(selection),
+      fuelType(),
+      vehicleClass(),
+      String(nextEfficiency),
+    ].join("::");
+  }
+
+  function costPayload(route, selection, nextEfficiency) {
+    return {
+      route_id: route.route_id || null,
+      origin: locationPayload(selection.origin),
+      destination: locationPayload(selection.destination),
+      route,
+      fuel_type: fuelType(),
+      fuel_efficiency_km_per_l: nextEfficiency,
+      vehicle_class: vehicleClass(),
+      round_trip_mode: "directional",
+    };
+  }
+
+  function validAggregatePayload(payload) {
+    return Boolean(
+      payload &&
+      payload.driving_cost &&
+      payload.fuel &&
+      payload.toll
+    );
+  }
+
+  function cancelPrefetch() {
+    prefetchGeneration += 1;
+    if (prefetchTimer !== null) {
+      window.clearTimeout(prefetchTimer);
+      prefetchTimer = null;
+    }
+    if (prefetchController) {
+      prefetchController.abort();
+      prefetchController = null;
+    }
+    prefetchState = null;
+  }
+
   function clearResult(message) {
     state.requestId += 1;
     if (activeController) {
       activeController.abort();
       activeController = null;
     }
+    cancelPrefetch();
     state.status = "idle";
     state.result = null;
     state.error = null;
@@ -143,6 +196,9 @@
   function renderTollValue(leg) {
     if (!leg || !Number.isFinite(leg.toll_krw)) {
       return "확인 불가";
+    }
+    if (leg.toll_mode === "stale_official") {
+      return formatWon(leg.toll_krw) + " (최근 확인 가격)";
     }
     if (leg.toll_status === "estimated" || leg.toll_mode === "estimated_doubled_outbound") {
       return `약 ${formatWon(leg.toll_krw)} (가는 길 공식 요금 기반 추정)`;
@@ -245,6 +301,12 @@
     } else if (efficiency() === null) {
       setStatus("fuel-status", "실제 연비를 0.1~100 km/L 범위로 입력하세요.", "error");
       setStatus("driving-cost-status", "실제 연비 입력 후 이동비를 계산할 수 있습니다.", "active");
+    } else if (prefetchState) {
+      const prefetchMessage = prefetchState.pending
+        ? "경로가 준비되어 공식 유가와 통행료를 확인 중입니다."
+        : "공식 유가와 통행료가 준비되었습니다. 계산 버튼을 누르면 표시합니다.";
+      setStatus("fuel-status", prefetchMessage, "active");
+      setStatus("driving-cost-status", prefetchMessage, "active");
     } else {
       setStatus("fuel-status", "계산 버튼을 누르면 공식 웹 유가를 확인합니다.", "active");
       setStatus("driving-cost-status", "통행료와 유가를 확인하면 이동비를 계산합니다.", "active");
@@ -372,6 +434,61 @@
     render();
   }
 
+  function schedulePrefetch(route) {
+    cancelPrefetch();
+    if (
+      !route ||
+      !latestSelection.origin ||
+      !latestSelection.destination ||
+      efficiency() === null ||
+      !config.drivingCostApiUrl
+    ) {
+      return;
+    }
+    const selection = {
+      origin: latestSelection.origin,
+      destination: latestSelection.destination,
+    };
+    const nextEfficiency = efficiency();
+    const key = costKey(route, selection, nextEfficiency);
+    const generation = prefetchGeneration;
+    prefetchTimer = window.setTimeout(() => {
+      prefetchTimer = null;
+      if (generation !== prefetchGeneration) {
+        return;
+      }
+      const controller = new AbortController();
+      prefetchController = controller;
+      const promise = fetch(config.drivingCostApiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(costPayload(route, selection, nextEfficiency)),
+        signal: controller.signal,
+      })
+        .then(async (response) => {
+          const payload = await response.json().catch(() => null);
+          if (!response.ok || !validAggregatePayload(payload)) {
+            return null;
+          }
+          return payload;
+        })
+        .catch(() => null);
+      prefetchState = { key, route, generation, promise, pending: true };
+      render();
+      promise.finally(() => {
+        if (
+          prefetchState &&
+          prefetchState.promise === promise &&
+          prefetchState.generation === generation
+        ) {
+          prefetchController = null;
+          prefetchState.pending = false;
+          render();
+        }
+      });
+    }, 250);
+  }
+
   async function calculateCost() {
     if (!state.route || !latestSelection.origin || !latestSelection.destination) {
       setStatus("driving-cost-status", "먼저 출발지와 목적지의 경로를 계산하세요.", "error");
@@ -398,22 +515,33 @@
     state.error = null;
     render();
     try {
-      const response = await fetch(config.drivingCostApiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          route_id: routeAtRequest.route_id || null,
-          origin: locationPayload(latestSelection.origin),
-          destination: locationPayload(latestSelection.destination),
-          route: routeAtRequest,
-          fuel_type: fuelType(),
-          fuel_efficiency_km_per_l: nextEfficiency,
-          vehicle_class: vehicleClass(),
-          round_trip_mode: "directional",
-        }),
-        signal: activeController.signal,
-      });
-      const payload = await response.json().catch(() => null);
+      const requestedKey = costKey(
+        routeAtRequest,
+        latestSelection,
+        nextEfficiency
+      );
+      let payload = null;
+      let responseOk = true;
+      if (
+        prefetchState &&
+        prefetchState.route === routeAtRequest &&
+        prefetchState.key === requestedKey &&
+        prefetchState.generation === prefetchGeneration
+      ) {
+        payload = await prefetchState.promise;
+      }
+      if (!validAggregatePayload(payload)) {
+        const response = await fetch(config.drivingCostApiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            costPayload(routeAtRequest, latestSelection, nextEfficiency)
+          ),
+          signal: activeController.signal,
+        });
+        payload = await response.json().catch(() => null);
+        responseOk = response.ok;
+      }
       if (
         requestId !== state.requestId ||
         state.route !== routeAtRequest ||
@@ -421,7 +549,7 @@
       ) {
         return false;
       }
-      if (!response.ok || !payload || !payload.driving_cost || !payload.fuel || !payload.toll) {
+      if (!responseOk || !payload || !payload.driving_cost || !payload.fuel || !payload.toll) {
         throw new Error(
           payload && payload.error && payload.error.message
             ? payload.error.message
@@ -463,6 +591,7 @@
     clearResult(state.route ? "새 경로의 이동비를 다시 계산하세요." : "경로가 없어 이동비 결과를 초기화했습니다.");
     state.route = event && event.detail ? event.detail.route || null : null;
     render();
+    schedulePrefetch(state.route);
   }
 
   function handleSelectionChanged(event) {
@@ -529,6 +658,7 @@
       state.route = route.getState().route || null;
     }
     render();
+    schedulePrefetch(state.route);
   });
 
   window.KoreaTripCost = Object.freeze({

@@ -393,7 +393,20 @@ def _fuel_status(fuel: FuelCostResult, fuel_cost_krw: int | None) -> str:
 
 
 def _toll_is_verified(toll: TollResult | None, amount_krw: int | None) -> bool:
-    return bool(toll is not None and toll.complete and amount_krw is not None)
+    return bool(
+        toll is not None
+        and toll.complete
+        and amount_krw is not None
+        and toll.source_status == "fresh"
+    )
+
+
+def _toll_mode(toll: TollResult | None, amount_krw: int | None) -> str:
+    if amount_krw is None:
+        return "unknown"
+    if toll is not None and toll.source_status == "stale":
+        return "stale_official"
+    return "verified_official"
 
 
 def _round_trip_toll(
@@ -408,6 +421,17 @@ def _round_trip_toll(
     """Build toll amount and explicit verification metadata for the aggregate."""
 
     if outbound_amount is not None and return_amount is not None:
+        if (
+            outbound_toll.source_status == "stale"
+            or (return_toll is not None and return_toll.source_status == "stale")
+        ):
+            return (
+                outbound_amount + return_amount,
+                "stale_official",
+                False,
+                False,
+                "TOLL_STALE_CACHE",
+            )
         return (
             outbound_amount + return_amount,
             "verified_official",
@@ -514,16 +538,71 @@ class DrivingCostService:
                 self.routing_client.route(request.destination, request.origin)
             )
 
-        outbound_toll_response, price = await asyncio.gather(
-            outbound_toll_task, price_task
-        )
-        outbound_toll = self._toll_result(outbound_toll_response)
-        reverse_route: RouteResult | None = None
-        if reverse_route_task is not None:
+        async def prefetch_return_toll():
+            """Start the reverse toll lookup as soon as reverse OSRM is ready."""
+
+            if reverse_route_task is None:
+                return None, None
             try:
                 reverse_route = await reverse_route_task
             except Exception as error:  # return route is diagnostic, not a fake cost
-                LOGGER.warning("Return OSRM route unavailable; round trip remains incomplete: %s", error)
+                LOGGER.warning(
+                    "Return OSRM route unavailable; round trip remains incomplete: %s",
+                    error,
+                )
+                return None, None
+            return_route_id = reverse_route.route_id or make_route_id(
+                request.destination, request.origin, reverse_route
+            )
+            return_route = reverse_route.model_copy(update={"route_id": return_route_id})
+            return_request = DrivingCostRequest(
+                route_id=return_route_id,
+                origin=request.destination,
+                destination=request.origin,
+                route=return_route,
+                fuel_type=request.fuel_type,
+                fuel_efficiency_km_per_l=request.fuel_efficiency_km_per_l,
+                vehicle_class=request.vehicle_class,
+                round_trip_mode="doubled_one_way",
+            )
+            return_toll_response = await self.toll_calculator.calculate(
+                self._toll_request(return_request)
+            )
+            return return_route, return_toll_response
+
+        # This task waits only for reverse OSRM and then immediately starts
+        # reverse toll matching.  The outbound toll and fuel-price tasks keep
+        # running independently, so a cold return lookup is no longer
+        # needlessly postponed behind the outbound source path.
+        return_toll_prefetch_task = (
+            asyncio.create_task(prefetch_return_toll())
+            if reverse_route_task is not None
+            else None
+        )
+
+        try:
+            outbound_toll_response, price = await asyncio.gather(
+                outbound_toll_task, price_task
+            )
+        except BaseException:
+            cleanup_tasks = [task for task in (reverse_route_task, return_toll_prefetch_task) if task is not None]
+            for task in cleanup_tasks:
+                if not task.done():
+                    task.cancel()
+            if cleanup_tasks:
+                await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+            raise
+        outbound_toll = self._toll_result(outbound_toll_response)
+        reverse_route: RouteResult | None = None
+        return_toll_response = None
+        if return_toll_prefetch_task is not None:
+            try:
+                reverse_route, return_toll_response = await return_toll_prefetch_task
+            except Exception as error:  # return route is diagnostic, not a fake cost
+                LOGGER.warning(
+                    "Return toll lookup unavailable; round trip remains incomplete: %s",
+                    error,
+                )
 
         outbound_toll_krw = outbound_toll.total_toll_krw if outbound_toll.complete else None
         return_toll: TollResult | None = None
@@ -554,10 +633,8 @@ class DrivingCostService:
                 return_fuel_cost_krw = fuel.return_fuel_cost_krw
             reason = "RETURN_ROUTE_NOT_REQUESTED_ESTIMATED_DOUBLED_OUTBOUND"
         elif reverse_route is not None:
-            return_route_id = reverse_route.route_id or make_route_id(
-                request.destination, request.origin, reverse_route
-            )
-            return_route = reverse_route.model_copy(update={"route_id": return_route_id})
+            return_route = reverse_route
+            return_route_id = reverse_route.route_id
             fuel = await self.fuel_service.calculate_with_price(
                 request,
                 price,
@@ -570,22 +647,11 @@ class DrivingCostService:
             if fuel.round_trip_complete:
                 return_fuel_volume_l = fuel.return_fuel_volume_l
                 return_fuel_cost_krw = fuel.return_fuel_cost_krw
-
-            return_request = DrivingCostRequest(
-                route_id=return_route_id,
-                origin=request.destination,
-                destination=request.origin,
-                route=return_route,
-                fuel_type=request.fuel_type,
-                fuel_efficiency_km_per_l=request.fuel_efficiency_km_per_l,
-                vehicle_class=request.vehicle_class,
-                round_trip_mode="doubled_one_way",
-            )
-            return_toll_response = await self.toll_calculator.calculate(
-                self._toll_request(return_request)
-            )
-            return_toll = self._toll_result(return_toll_response)
-            return_toll_krw = return_toll.total_toll_krw if return_toll.complete else None
+            if return_toll_response is not None:
+                return_toll = self._toll_result(return_toll_response)
+                return_toll_krw = (
+                    return_toll.total_toll_krw if return_toll.complete else None
+                )
         else:
             fuel = await self.fuel_service.calculate_outbound_only_with_price(
                 request,
@@ -629,12 +695,12 @@ class DrivingCostService:
             fuel_cost_krw=outbound_fuel_cost_krw,
             toll_krw=outbound_toll_krw,
             fuel_status=fuel_status,
-            toll_mode="verified_official" if outbound_toll_krw is not None else "unknown",
+            toll_mode=_toll_mode(outbound_toll, outbound_toll_krw),
             toll_verified=_toll_is_verified(outbound_toll, outbound_toll_krw),
             reason=None if outbound_toll.complete and fuel.complete else reason,
         )
         return_toll_amount_for_leg = return_toll_krw
-        return_toll_mode_for_leg = "verified_official" if return_toll_krw is not None else "unknown"
+        return_toll_mode_for_leg = _toll_mode(return_toll, return_toll_krw)
         return_toll_verified_for_leg = _toll_is_verified(return_toll, return_toll_krw)
         if return_toll_amount_for_leg is None and round_trip_toll_estimated and outbound_toll_krw is not None:
             return_toll_amount_for_leg = outbound_toll_krw

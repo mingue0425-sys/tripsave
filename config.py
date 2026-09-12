@@ -47,9 +47,21 @@ TOLL_INDEX_DB = PROJECT_ROOT / "data" / "korea_trip.db"
 OFFICIAL_TOLL_URL = "https://www.ex.co.kr/portal/usefee/selectUseFeeNList.do"
 OFFICIAL_TOLL_HOSTNAME = "www.ex.co.kr"
 TOLL_CACHE_TTL_DAYS = 30
+# A verified result may be served immediately after its fresh TTL while a
+# low-priority refresh runs.  Values older than this window are no longer
+# trusted as a usable fallback and therefore behave like a cache miss.
+TOLL_STALE_MAX_AGE_DAYS = int(os.getenv("KTO_TOLL_STALE_MAX_AGE_DAYS", "180"))
+# A failed official pair is never treated as a price.  This short in-memory
+# cooldown only prevents repeatedly paying the HTTP/browser failure latency
+# for a known unavailable direction; it expires and is retried automatically.
+TOLL_FAILURE_COOLDOWN_S = float(os.getenv("KTO_TOLL_FAILURE_COOLDOWN_S", "30"))
 TOLL_REQUEST_TIMEOUT_S = 20.0
 TOLL_CONNECT_TIMEOUT_S = 5.0
 TOLL_REQUEST_INTERVAL_S = 1.5
+TOLL_HTTP_MAX_CONNECTIONS = int(os.getenv("KTO_TOLL_HTTP_MAX_CONNECTIONS", "2"))
+TOLL_HTTP_MAX_KEEPALIVE_CONNECTIONS = int(
+    os.getenv("KTO_TOLL_HTTP_MAX_KEEPALIVE_CONNECTIONS", "2")
+)
 # OSM gate points and the OSRM geometry are normally coincident; 75 m leaves
 # room for extract/geometry differences without treating nearby ramps and
 # parallel carriageways several hundred metres away as the travelled gate.
@@ -106,6 +118,10 @@ TOLL_BROWSER_NAVIGATION_TIMEOUT_S = float(os.getenv("KTO_TOLL_BROWSER_NAVIGATION
 TOLL_BROWSER_SELECTOR_TIMEOUT_S = float(os.getenv("KTO_TOLL_BROWSER_SELECTOR_TIMEOUT_S", "15"))
 TOLL_BROWSER_RESULT_TIMEOUT_S = float(os.getenv("KTO_TOLL_BROWSER_RESULT_TIMEOUT_S", "30"))
 TOLL_BROWSER_HEADLESS = _env_bool("KTO_TOLL_BROWSER_HEADLESS", True)
+# Launch Chromium during application startup so an exceptional browser
+# fallback does not put process startup on the user request's critical path.
+# Set KTO_TOLL_BROWSER_WARMUP=0 for deployments that prefer lazy resources.
+TOLL_BROWSER_WARMUP = _env_bool("KTO_TOLL_BROWSER_WARMUP", True)
 TOLL_DEBUG_MODE = _env_bool("KTO_DEBUG", False)
 TOLL_BROWSER_ARTIFACT_DIR = (
     Path(os.getenv("KTO_TOLL_DEBUG_ARTIFACT_DIR", str(PROJECT_ROOT / "artifacts" / "toll-debug")))
