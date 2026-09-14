@@ -6,6 +6,8 @@ import json
 import logging
 import math
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
 from backend.tolls.matcher import (
@@ -47,8 +49,13 @@ class TollIndex:
 
     def __init__(self, database_path: Path) -> None:
         self.database_path = Path(database_path)
-        self._connection: sqlite3.Connection | None = None
+        # FastAPI's TestClient and production workers can invoke one service
+        # instance from more than one thread.  Keep one read-only connection
+        # per thread rather than reusing a sqlite connection created elsewhere.
+        self._connections: dict[int, sqlite3.Connection] = {}
+        self._connection_lock = threading.RLock()
         self._gates: list[TollGate] | None = None
+        self.last_timings: dict[str, float] = {}
 
     @property
     def ready(self) -> bool:
@@ -64,23 +71,34 @@ class TollIndex:
             return False
 
     def _get_connection(self) -> sqlite3.Connection:
-        if self._connection is not None:
-            return self._connection
-        try:
-            self._connection = connect_database(str(self.database_path), read_only=True)
-            self._connection.execute("SELECT 1 FROM toll_gates LIMIT 1").fetchone()
-        except (OSError, sqlite3.Error) as error:
-            self._connection = None
-            raise TollIndexUnavailableError(
-                f"Toll index is unavailable: {self.database_path}"
-            ) from error
-        return self._connection
+        thread_id = threading.get_ident()
+        with self._connection_lock:
+            connection = self._connections.get(thread_id)
+            if connection is not None:
+                return connection
+            try:
+                connection = connect_database(
+                    str(self.database_path),
+                    read_only=True,
+                    check_same_thread=False,
+                )
+                connection.execute("SELECT 1 FROM toll_gates LIMIT 1").fetchone()
+            except (OSError, sqlite3.Error) as error:
+                if connection is not None:
+                    connection.close()
+                self._connections.pop(thread_id, None)
+                raise TollIndexUnavailableError(
+                    f"Toll index is unavailable: {self.database_path}"
+                ) from error
+            self._connections[thread_id] = connection
+            return connection
 
     def close(self) -> None:
-        if self._connection is not None:
-            self._connection.close()
-            self._connection = None
-        self._gates = None
+        with self._connection_lock:
+            for connection in self._connections.values():
+                connection.close()
+            self._connections.clear()
+            self._gates = None
 
     def stats(self) -> dict[str, object]:
         connection = self._get_connection()
@@ -207,12 +225,14 @@ class TollIndex:
             raise TollIndexUnavailableError(
                 "Local OSM toll index is not ready. Run the toll index setup procedure."
             )
+        gate_started = time.perf_counter()
         gates, raw_candidates = match_toll_gates_detailed(
             route_coordinates,
             self.gates(),
             threshold_m=gate_threshold_m,
             deduplication_threshold_m=gate_deduplication_threshold_m,
         )
+        gate_ms = round((time.perf_counter() - gate_started) * 1000, 2)
         route_length_m = sum(
             coordinate_distance_meters(first, second)
             for first, second in zip(route_coordinates, route_coordinates[1:])
@@ -253,7 +273,13 @@ class TollIndex:
             len(gates),
             sum(1 for gate in gates if gate.duplicate_count > 1),
         )
+        road_started = time.perf_counter()
         roads = self._nearby_toll_roads(route_coordinates, road_threshold_m)
+        road_ms = round((time.perf_counter() - road_started) * 1000, 2)
+        self.last_timings = {
+            "gate_match_and_dedup_ms": gate_ms,
+            "road_match_ms": road_ms,
+        }
         supported_operator_evidence = any(
             road.operator and _is_supported_operator(road.operator) for road in roads
         ) or any(

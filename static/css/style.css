@@ -605,6 +605,32 @@ h1 {
   font-size: 0.94rem;
 }
 
+.driving-cost-metrics .cost-leg {
+  border: 1px solid #d9e6e9;
+  border-radius: 7px;
+  display: grid;
+  gap: 5px 10px;
+  grid-column: 1 / -1;
+  grid-template-columns: 1fr 1fr;
+  padding: 8px;
+}
+
+.driving-cost-metrics .cost-leg > dt:first-child {
+  color: var(--ink);
+  font-size: 0.74rem;
+  font-weight: 800;
+  grid-column: 1 / -1;
+}
+
+.driving-cost-metrics .cost-leg > dd {
+  font-size: 0.78rem;
+}
+
+.driving-cost-metrics .cost-leg--aggregate {
+  background: #f1f8f7;
+  border-color: #a8cfca;
+}
+
 .toll-panel {
   border-top: 1px solid #d9e6e9;
   margin-top: 13px;

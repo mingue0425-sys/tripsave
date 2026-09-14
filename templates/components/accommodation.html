@@ -1,0 +1,36 @@
+<section class="accommodation-panel" id="accommodation-panel" aria-labelledby="accommodation-panel-title">
+  <div class="accommodation-heading">
+    <div>
+      <p class="location-kicker">PUBLIC WEB STAYS</p>
+      <h2 id="accommodation-panel-title">숙소 검색</h2>
+    </div>
+  </div>
+  <p id="accommodation-summary" class="accommodation-summary">
+    목적지를 선택하면 날짜별 공개 숙소 가격을 검색할 수 있습니다.
+  </p>
+  <div class="accommodation-inputs">
+    <div class="accommodation-input-group">
+      <label for="accommodation-checkin">체크인</label>
+      <input id="accommodation-checkin" type="date" required>
+    </div>
+    <div class="accommodation-input-group">
+      <label for="accommodation-checkout">체크아웃</label>
+      <input id="accommodation-checkout" type="date" required>
+    </div>
+    <div class="accommodation-input-group">
+      <label for="accommodation-adults">성인</label>
+      <input id="accommodation-adults" type="number" min="1" max="20" step="1" value="2" required>
+    </div>
+    <div class="accommodation-input-group">
+      <label for="accommodation-children">아동</label>
+      <input id="accommodation-children" type="number" min="0" max="20" step="1" value="0" required>
+    </div>
+  </div>
+  <button id="accommodation-search" class="button button--accommodation" type="button" disabled>
+    숙소 검색
+  </button>
+  <p id="accommodation-status" class="accommodation-status" role="status" aria-live="polite">
+    목적지를 먼저 선택하세요.
+  </p>
+  <div id="accommodation-results" class="accommodation-results" aria-live="polite"></div>
+</section>

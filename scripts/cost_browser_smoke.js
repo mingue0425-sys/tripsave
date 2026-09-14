@@ -122,9 +122,28 @@ async function run() {
     assert(first.result && first.result.fuel.complete, "official web gasoline price produces complete fuel cost");
     assert(first.result.fuel.price_krw_per_l > 0, "gasoline price is positive and not a fallback zero");
     assert(first.result.fuel.fuel_volume_l > 0, "fuel volume uses the canonical route distance");
-    assert(first.result.driving_cost.complete, "toll plus fuel produces a complete driving cost");
-    assert(Number.isInteger(first.result.driving_cost.one_way.total_krw), "one-way total is an integer KRW value");
+    assert(first.result.driving_cost.cost_complete, "toll plus fuel produces a complete driving cost");
+    assert(Number.isInteger(first.result.driving_cost.outbound.total_krw), "outbound total is an integer KRW value");
+    assert(Number.isInteger(first.result.driving_cost.return.total_krw), "return total is an integer KRW value");
     assert(Number.isInteger(first.result.driving_cost.round_trip.total_krw), "round-trip total is an integer KRW value");
+    const costLegText = await page.locator(".driving-cost-metrics .cost-leg").allTextContents();
+    assert(costLegText.length === 3, "UI renders outbound, return, and round-trip sections");
+    assert(costLegText.some((text) => text.includes("가는 길")), "UI labels the outbound leg");
+    assert(costLegText.some((text) => text.includes("오는 길")), "UI labels the return leg");
+    assert(costLegText.some((text) => text.includes("왕복 합계")), "UI labels the round-trip aggregate");
+    assert((await page.locator("#cost-outbound-fuel").textContent()).trim() !== "확인 불가", "UI renders outbound fuel cost");
+    assert((await page.locator("#cost-return-fuel").textContent()).trim() !== "확인 불가", "UI renders return fuel cost");
+    assert((await page.locator("#cost-outbound-total").textContent()).trim() === `${first.result.driving_cost.outbound.total_krw.toLocaleString("ko-KR")}원`, "UI outbound total matches the API JSON");
+    assert((await page.locator("#cost-return-total").textContent()).trim() === `${first.result.driving_cost.return.total_krw.toLocaleString("ko-KR")}원`, "UI return total matches the API JSON");
+    assert((await page.locator("#cost-round-trip-total").textContent()).trim() === `${first.result.driving_cost.round_trip.total_krw.toLocaleString("ko-KR")}원`, "UI round-trip total matches the API JSON");
+    if (first.result.driving_cost.round_trip_toll.estimated) {
+      assert((await page.locator("#cost-return-toll").textContent()).includes("추정"), "UI labels doubled outbound return toll as an estimate");
+    }
+    assert(
+      first.result.driving_cost.round_trip.total_krw ===
+        first.result.driving_cost.outbound.total_krw + first.result.driving_cost.return.total_krw,
+      "round-trip total equals outbound plus return",
+    );
     const tollState = await page.evaluate(() => window.KoreaTripToll.getState());
     assert(tollState.result && tollState.result.route_id === route.route_id, "aggregate result synchronizes the official toll panel");
 
@@ -142,7 +161,7 @@ async function run() {
     );
     const efficiencyChanged = await page.evaluate(() => window.KoreaTripCost.getState().result);
     assert(efficiencyChanged.fuel.price_krw_per_l === gasolinePrice, "efficiency change reuses the verified price cache");
-    assert(efficiencyChanged.driving_cost.one_way.toll_krw === first.result.driving_cost.one_way.toll_krw, "efficiency change preserves official toll");
+    assert(efficiencyChanged.driving_cost.outbound.toll_krw === first.result.driving_cost.outbound.toll_krw, "efficiency change preserves official toll");
 
     await page.locator("#fuel-type").selectOption("diesel");
     await page.waitForFunction(() => window.KoreaTripCost.getState().result === null, null, { timeout: 10_000 });

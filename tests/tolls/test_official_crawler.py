@@ -30,13 +30,34 @@ def test_crawler_uses_normal_html_form_and_utf8_body() -> None:
         if request.url.path == "/robots.txt":
             return httpx.Response(200, text="User-agent: *\nAllow: /", request=request)
         if request.method == "GET":
-            return httpx.Response(200, text="<html>form</html>", request=request)
+            return httpx.Response(
+                200,
+                text="<html><form name='frm1'></form></html>",
+                headers={"content-type": "text/html; charset=utf-8"},
+                request=request,
+            )
         assert request.headers["content-type"].startswith(
             "application/x-www-form-urlencoded"
         )
+        if request.url.path.endswith("pathCheckN.do"):
+            assert b"zonename1=%EC%84%9C%EC%9A%B8" in request.content
+            assert b"zonename2=%EB%B6%80%EC%82%B0" in request.content
+            return httpx.Response(
+                200,
+                json=[
+                    [{"nosunCd": "190", "nosunNm": "서울"}],
+                    [{"nosunCd": "252", "nosunNm": "부산"}],
+                ],
+                request=request,
+            )
         assert b"zonename1=%EC%84%9C%EC%9A%B8" in request.content
         assert b"zonename2=%EB%B6%80%EC%82%B0" in request.content
-        return httpx.Response(200, text=HTML_FRAGMENT, request=request)
+        return httpx.Response(
+            200,
+            text=HTML_FRAGMENT,
+            headers={"content-type": "text/html; charset=utf-8"},
+            request=request,
+        )
 
     async def run() -> object:
         crawler = KoreaExpresswayTollCrawler(
@@ -50,6 +71,7 @@ def test_crawler_uses_normal_html_form_and_utf8_body() -> None:
     assert [request.url.path for request in requests] == [
         "/robots.txt",
         "/portal/usefee/selectUseFeeNList.do",
+        "/portal/usefee/pathCheckN.do",
         "/portal/usefee/selectUseFeeNList.do",
     ]
 
@@ -90,7 +112,30 @@ def test_crawler_maps_timeout_without_retry_loop() -> None:
 
 def test_crawler_surfaces_parser_failure() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, text="<html><div id='noMinja'></div></html>", request=request)
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nAllow: /", request=request)
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                text="<html><form name='frm1'></form></html>",
+                headers={"content-type": "text/html; charset=utf-8"},
+                request=request,
+            )
+        if request.url.path.endswith("pathCheckN.do"):
+            return httpx.Response(
+                200,
+                json=[
+                    [{"nosunCd": "190", "nosunNm": "서울"}],
+                    [{"nosunCd": "252", "nosunNm": "부산"}],
+                ],
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            text="<html><div id='noMinja'></div></html>",
+            headers={"content-type": "text/html; charset=utf-8"},
+            request=request,
+        )
 
     async def run() -> object:
         crawler = KoreaExpresswayTollCrawler(

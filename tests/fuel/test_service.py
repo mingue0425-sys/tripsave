@@ -123,16 +123,17 @@ def test_driving_cost_sums_directional_official_tolls_and_reverse_fuel(tmp_path)
 
     assert result.status == "ok"
     assert result.driving_cost.complete is True
-    assert result.driving_cost.one_way.total_krw == 34_500
-    assert result.driving_cost.round_trip.fuel_krw == 20_400
+    assert result.driving_cost.outbound.total_krw == 34_500
+    assert result.driving_cost.return_leg.fuel_cost_krw == 20_400
+    assert result.driving_cost.round_trip.fuel_cost_krw == 37_400
     assert result.driving_cost.round_trip.toll_krw == 35_500
-    assert result.driving_cost.round_trip.total_krw == 55_900
+    assert result.driving_cost.round_trip.total_krw == 72_900
     assert result.driving_cost.round_trip_distance_mode == "reverse_route"
-    assert result.driving_cost.round_trip_toll_mode == "directional_official"
+    assert result.driving_cost.round_trip_toll.mode == "verified_official"
     assert result.return_toll is not None and result.return_toll.total_toll_krw == 18_000
 
 
-def test_driving_cost_doubles_only_known_outbound_toll_when_return_route_unavailable(tmp_path) -> None:
+def test_driving_cost_does_not_complete_when_return_route_unavailable(tmp_path) -> None:
     class BrokenRouting:
         async def route(self, origin, destination):
             raise RuntimeError("OSRM return route failed")
@@ -149,11 +150,12 @@ def test_driving_cost_doubles_only_known_outbound_toll_when_return_route_unavail
 
     result = asyncio.run(service.calculate(driving_request()))
 
-    assert result.status == "ok"
-    assert result.driving_cost.round_trip_toll_mode == "doubled_one_way"
-    assert result.driving_cost.round_trip.toll_krw == 35_000
-    assert result.driving_cost.round_trip.total_krw == 69_000
-    assert result.driving_cost.reason == "RETURN_ROUTE_UNAVAILABLE_USED_DOUBLED_ONE_WAY"
+    assert result.status == "partial"
+    assert result.driving_cost.cost_complete is False
+    assert result.driving_cost.round_trip_toll.mode == "unknown"
+    assert result.driving_cost.round_trip_toll.amount_krw is None
+    assert result.driving_cost.round_trip.total_krw is None
+    assert result.driving_cost.reason == "RETURN_ROUTE_UNAVAILABLE"
 
 
 def test_directional_return_toll_failure_keeps_outbound_official_value_and_marks_fallback(tmp_path) -> None:
@@ -172,6 +174,12 @@ def test_directional_return_toll_failure_keeps_outbound_official_value_and_marks
     assert result.status == "ok"
     assert result.return_toll is not None and result.return_toll.complete is False
     assert result.toll.complete is True and result.toll.total_toll_krw == 17_500
-    assert result.driving_cost.round_trip_toll_mode == "doubled_one_way"
+    assert result.driving_cost.round_trip_toll.mode == "estimated_doubled_outbound"
+    assert result.driving_cost.round_trip_toll.verified is False
+    assert result.driving_cost.round_trip_toll.complete is False
     assert result.driving_cost.round_trip.toll_krw == 35_000
-    assert result.driving_cost.reason == "RETURN_TOLL_UNAVAILABLE_USED_DOUBLED_ONE_WAY"
+    assert result.driving_cost.round_trip.fuel_cost_krw == 37_400
+    assert result.driving_cost.round_trip.total_krw == 72_400
+    assert result.driving_cost.officially_verified is False
+    assert result.driving_cost.contains_estimate is True
+    assert result.driving_cost.reason == "RETURN_TOLL_UNAVAILABLE"

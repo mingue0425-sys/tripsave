@@ -1,5 +1,6 @@
-"""FastAPI entry point for Korea Trip Optimizer V0.5."""
+"""FastAPI entry point for Korea Trip Optimizer V0.5.1."""
 
+from contextlib import asynccontextmanager
 import logging
 
 from fastapi import FastAPI, Query, Request
@@ -27,6 +28,13 @@ from config import (
     map_config,
 )
 from backend.places import search_places
+from backend.places.models import PlaceSearchRequest, PlaceSearchResponse
+from backend.places.service import PLACES_API_URL, PlaceService
+from backend.accommodation.models import (
+    AccommodationSearchRequest,
+    AccommodationSearchResponse,
+)
+from backend.accommodation.service import ACCOMMODATION_API_URL, AccommodationService
 from backend.fuel.errors import FuelServiceError
 from backend.fuel.models import (
     DrivingCostRequest,
@@ -53,7 +61,6 @@ from backend.tolls.service import TollCalculator
 LOGGER = logging.getLogger(__name__)
 
 
-app = FastAPI(title="Korea Trip Optimizer", version=APP_VERSION)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 routing_client = OSRMClient(
     base_url=OSRM_BASE_URL,
@@ -67,6 +74,25 @@ driving_cost_service = DrivingCostService(
     fuel_service=fuel_price_service,
     routing_client=routing_client,
 )
+accommodation_service = AccommodationService(database_path=TOLL_INDEX_DB)
+places_service = PlaceService()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Keep reusable toll clients alive, then close them on shutdown."""
+
+    try:
+        await toll_calculator.warmup()
+    except Exception as error:
+        # HTTP remains the primary source; a missing/unlaunchable browser must
+        # not prevent the local route/cost service from starting.
+        LOGGER.warning("Toll browser warm-up unavailable; fallback stays lazy: %s", error)
+    yield
+    await toll_calculator.close()
+
+
+app = FastAPI(title="Korea Trip Optimizer", version=APP_VERSION, lifespan=lifespan)
 
 # StaticFiles performs safe path handling. Basemap tiles are intentionally
 # fetched from the configured OpenFreeMap provider during development; this
@@ -113,6 +139,28 @@ async def request_validation_handler(
                 },
             },
         )
+    if request.url.path == ACCOMMODATION_API_URL:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "status": "error",
+                "error": {
+                    "code": "INVALID_REQUEST",
+                    "message": "숙소 검색 요청이 올바르지 않습니다.",
+                },
+            },
+        )
+    if request.url.path == PLACES_API_URL and request.method == "POST":
+        return JSONResponse(
+            status_code=422,
+            content={
+                "status": "error",
+                "error": {
+                    "code": "INVALID_REQUEST",
+                    "message": "주변 장소 검색 요청이 올바르지 않습니다.",
+                },
+            },
+        )
     return await request_validation_exception_handler(request, exc)
 
 
@@ -154,6 +202,30 @@ async def place_search(
         "query": query,
         "results": [place.model_dump() for place in search_places(query, limit)],
     }
+
+
+@app.post(
+    PLACES_API_URL,
+    response_model=PlaceSearchResponse,
+)
+async def search_places_around_destination(
+    request: PlaceSearchRequest,
+) -> PlaceSearchResponse:
+    """Search public restaurant and attraction pages near the destination."""
+
+    return await places_service.search(request)
+
+
+@app.post(
+    ACCOMMODATION_API_URL,
+    response_model=AccommodationSearchResponse,
+)
+async def search_accommodations(
+    request: AccommodationSearchRequest,
+) -> AccommodationSearchResponse:
+    """Search public accommodation pages for one destination and stay."""
+
+    return await accommodation_service.search(request)
 
 
 def routing_error_response(error: RoutingError) -> JSONResponse:

@@ -121,9 +121,66 @@ async def main() -> None:
             check(result and result["fuel"]["complete"], "official gasoline price produces complete fuel cost")
             check(result["fuel"]["price_krw_per_l"] > 0, "gasoline price is positive, not zero fallback")
             check(result["fuel"]["fuel_volume_l"] > 0, "fuel volume uses canonical route distance")
-            check(result["driving_cost"]["complete"], "toll plus fuel produces a complete driving cost")
-            check(isinstance(result["driving_cost"]["one_way"]["total_krw"], int), "one-way total is integer KRW")
-            check(isinstance(result["driving_cost"]["round_trip"]["total_krw"], int), "round-trip total is integer KRW")
+            driving = result["driving_cost"]
+            check(driving["outbound"]["complete"], "outbound driving cost is complete")
+            check(isinstance(driving["outbound"]["total_krw"], int), "outbound total is integer KRW")
+            return_complete = bool(driving["return"]["complete"])
+            round_trip_complete = bool(driving["round_trip"]["complete"])
+            if return_complete and round_trip_complete:
+                check(isinstance(driving["return"]["total_krw"], int), "return total is integer KRW")
+                check(isinstance(driving["round_trip"]["total_krw"], int), "round-trip total is integer KRW")
+                check(driving["cost_complete"], "complete driving cost has verified outbound and return legs")
+            else:
+                check(
+                    driving["return"]["toll_krw"] is None
+                    and driving["round_trip"]["total_krw"] is None,
+                    "unavailable return toll remains unknown instead of zero",
+                )
+            cost_leg_text = await page.locator(".driving-cost-metrics .cost-leg").all_inner_texts()
+            check(len(cost_leg_text) == 3, "UI renders outbound, return, and round-trip sections")
+            check(any("가는 길" in text for text in cost_leg_text), "UI labels the outbound leg")
+            check(any("오는 길" in text for text in cost_leg_text), "UI labels the return leg")
+            check(any("왕복 합계" in text for text in cost_leg_text), "UI labels the round-trip aggregate")
+            check(
+                await page.locator("#cost-outbound-fuel").inner_text() != "확인 불가",
+                "UI renders outbound fuel cost",
+            )
+            check(
+                await page.locator("#cost-return-fuel").inner_text() != "확인 불가",
+                "UI renders return fuel cost",
+            )
+            check(
+                await page.locator("#cost-outbound-total").inner_text()
+                == f'{driving["outbound"]["total_krw"]:,}원',
+                "UI outbound total matches the API JSON",
+            )
+            if return_complete and round_trip_complete:
+                check(
+                    await page.locator("#cost-return-total").inner_text()
+                    == f'{driving["return"]["total_krw"]:,}원',
+                    "UI return total matches the API JSON",
+                )
+                check(
+                    await page.locator("#cost-round-trip-total").inner_text()
+                    == f'{driving["round_trip"]["total_krw"]:,}원',
+                    "UI round-trip total matches the API JSON",
+                )
+            else:
+                check(
+                    "확인 불가" in await page.locator("#cost-return-total").inner_text(),
+                    "UI keeps unknown return total visibly unavailable",
+                )
+            if driving["round_trip_toll"]["estimated"]:
+                check(
+                    "추정" in await page.locator("#cost-return-toll").inner_text(),
+                    "UI labels doubled outbound return toll as an estimate",
+                )
+            if return_complete and round_trip_complete:
+                check(
+                    driving["round_trip"]["total_krw"]
+                    == driving["outbound"]["total_krw"] + driving["return"]["total_krw"],
+                    "round-trip total equals outbound plus return",
+                )
             toll_state = await page.evaluate("() => window.KoreaTripToll.getState()")
             check(
                 toll_state["result"] and toll_state["result"]["route_id"] == route["route_id"],
@@ -144,7 +201,7 @@ async def main() -> None:
             changed = await page.evaluate("() => window.KoreaTripCost.getState().result")
             check(changed["fuel"]["price_krw_per_l"] == old_price, "efficiency change reuses cached verified price")
             check(
-                changed["driving_cost"]["one_way"]["toll_krw"] == result["driving_cost"]["one_way"]["toll_krw"],
+                changed["driving_cost"]["outbound"]["toll_krw"] == result["driving_cost"]["outbound"]["toll_krw"],
                 "efficiency change preserves official toll",
             )
 

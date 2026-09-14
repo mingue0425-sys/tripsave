@@ -31,7 +31,7 @@ def test_health() -> None:
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "version": "0.5.0"}
+    assert response.json() == {"status": "ok", "version": "0.5.1"}
 
 
 def test_retired_preview_map_routes_are_not_served() -> None:

@@ -1,4 +1,4 @@
-"""Stable API errors for the V0.5 fuel endpoints."""
+"""Stable API errors for the V0.5.1 fuel endpoints."""
 
 
 class FuelServiceError(RuntimeError):
