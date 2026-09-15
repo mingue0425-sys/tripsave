@@ -19,9 +19,9 @@ from typing import Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from backend.accommodation.models import AccommodationResult
+from backend.city_search import load_places
 from backend.geo import haversine_distance_meters
 from backend.models import Location
-from backend.places import load_places
 from crawler.accommodation.errors import (
     AccommodationAccessDeniedError,
     AccommodationDestinationError,
@@ -31,7 +31,6 @@ from crawler.accommodation.errors import (
     AccommodationSourceTimeoutError,
 )
 from crawler.accommodation.parser import parse_booking_search_html
-
 
 LOGGER = logging.getLogger(__name__)
 
@@ -123,6 +122,17 @@ def build_booking_search_url(
     return urlunsplit(("https", "www.booking.com", "/searchresults.html", query, ""))
 
 
+def _is_allowed_booking_url(value: str) -> bool:
+    parsed = urlsplit(value)
+    return (
+        parsed.scheme == "https"
+        and (parsed.hostname or "").lower() in BOOKING_HOSTNAMES
+        and not parsed.username
+        and not parsed.password
+        and not parsed.fragment
+    )
+
+
 class BookingComSource:
     """Browser-backed adapter for Booking's normal public search page."""
 
@@ -143,7 +153,7 @@ class BookingComSource:
         self.result_timeout_ms = max(1_000, int(result_timeout_s * 1_000))
         self.request_interval_s = max(0.0, float(request_interval_s))
         self.headless = (
-            _env_bool("KTO_ACCOMMODATION_BROWSER_HEADLESS", False)
+            _env_bool("KTO_ACCOMMODATION_BROWSER_HEADLESS", True)
             if headless is None
             else bool(headless)
         )
@@ -167,6 +177,11 @@ class BookingComSource:
     async def _ensure_page(self) -> Any:
         if self._page is not None and not self._page.is_closed():
             return self._page
+        if any(resource is not None for resource in (self._page, self._context, self._browser, self._playwright)):
+            # A closed page can leave its context/browser alive.  Dispose of
+            # that tree before creating a replacement so repeated searches do
+            # not leak Chromium processes or Playwright transports.
+            await self.close()
         try:
             from playwright.async_api import async_playwright
 
@@ -196,7 +211,7 @@ class BookingComSource:
             self.last_request_events.append(
                 {"kind": "request", "method": request.method, "url": request.url}
             )
-        except Exception:
+        except (AttributeError, TypeError, RuntimeError):
             return
 
     def _record_response(self, response: Any) -> None:
@@ -209,7 +224,7 @@ class BookingComSource:
                     "status": response.status,
                 }
             )
-        except Exception:
+        except (AttributeError, TypeError, RuntimeError):
             return
 
     @staticmethod
@@ -307,6 +322,10 @@ class BookingComSource:
 
             status = self._response_status(response)
             self._raise_for_response_status(status)
+            if not _is_allowed_booking_url(str(page.url)):
+                raise AccommodationSourceError(
+                    "Booking redirected outside the fixed public host."
+                )
 
             cards = page.locator('[data-testid="property-card"]').first
             try:

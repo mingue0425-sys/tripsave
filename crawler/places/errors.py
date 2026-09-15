@@ -40,9 +40,16 @@ class SourceHTTPError(PlaceSourceError):
 
     def __init__(self, status_code: int) -> None:
         self.status_code = status_code
+        if status_code in {401, 403}:
+            code = "ACCESS_DENIED"
+            public_message = "The public place source denied access."
+        else:
+            code = "SOURCE_HTTP_ERROR"
+            public_message = f"The public place page returned HTTP {status_code}."
         super().__init__(
             f"Place source returned HTTP {status_code}.",
-            public_message=f"The public place page returned HTTP {status_code}.",
+            code=code,
+            public_message=public_message,
             retriable=status_code in {408, 425, 429} or status_code >= 500,
         )
 

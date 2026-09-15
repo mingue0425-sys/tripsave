@@ -3,12 +3,17 @@
 
   const config = window.KTO_CONFIG || {};
   const API_URL = config.placesSearchUrl || "/api/places/search";
+  const CATEGORIES = Object.freeze(["restaurant", "attraction"]);
   const CATEGORY_LABELS = Object.freeze({
     restaurant: "맛집",
     attraction: "관광지",
   });
   const state = {
     status: "idle",
+    resultsByCategory: {
+      restaurant: [],
+      attraction: [],
+    },
     results: [],
     response: null,
     error: null,
@@ -41,6 +46,10 @@
     ].join("|");
   }
 
+  function categoryFingerprint(categories) {
+    return categories.slice().sort().join(",");
+  }
+
   function displayName(destination) {
     return destination
       ? destination.name || destination.label || "선택한 목적지"
@@ -59,10 +68,62 @@
   }
 
   function selectedCategories() {
-    return ["restaurant", "attraction"].filter((category) => {
+    return CATEGORIES.filter((category) => {
       const checkbox = getElement(`places-category-${category}`);
       return checkbox && checkbox.checked;
     });
+  }
+
+  function allResults() {
+    return CATEGORIES.flatMap((category) => state.resultsByCategory[category]);
+  }
+
+  function replaceResults() {
+    state.results = allResults();
+  }
+
+  function groupResults(results) {
+    const grouped = {
+      restaurant: [],
+      attraction: [],
+    };
+    (Array.isArray(results) ? results : []).forEach((place) => {
+      if (place && CATEGORIES.includes(place.category)) {
+        grouped[place.category].push(place);
+      }
+    });
+    return grouped;
+  }
+
+  function validCoordinates(place) {
+    return (
+      place &&
+      Number.isFinite(place.lat) &&
+      Number.isFinite(place.lng) &&
+      place.lat >= -90 &&
+      place.lat <= 90 &&
+      place.lng >= -180 &&
+      place.lng <= 180
+    );
+  }
+
+  function markersFor(items) {
+    return items
+      .filter(validCoordinates)
+      .map((place, index) => ({
+        id: `${place.category || "place"}:${place.source || "source"}:${
+          place.source_id || index
+        }`,
+        lat: place.lat,
+        lng: place.lng,
+        name: place.name,
+        address: place.address,
+        category: place.category,
+        source: place.source,
+        rating: place.rating,
+        rating_scale: place.rating_scale,
+        review_count: place.review_count,
+      }));
   }
 
   function formatRating(place) {
@@ -84,10 +145,10 @@
   function distanceKm(destination, place) {
     if (
       !destination ||
-      typeof destination.lat !== "number" ||
-      typeof destination.lng !== "number" ||
-      typeof place.lat !== "number" ||
-      typeof place.lng !== "number"
+      !Number.isFinite(destination.lat) ||
+      !Number.isFinite(destination.lng) ||
+      !Number.isFinite(place.lat) ||
+      !Number.isFinite(place.lng)
     ) {
       return null;
     }
@@ -99,7 +160,7 @@
     const a =
       Math.sin(deltaLat / 2) ** 2 +
       Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLng / 2) ** 2;
-    return 6371.0088 * 2 * Math.asin(Math.sqrt(Math.min(1, a)));
+    return 6371.0088 * 2 * Math.asin(Math.sqrt(Math.min(1, Math.max(0, a))));
   }
 
   function safeSourceUrl(value) {
@@ -110,7 +171,10 @@
       const url = new URL(value);
       if (
         url.protocol !== "https:" ||
-        url.hostname !== "english.visitkorea.or.kr"
+        url.hostname !== "english.visitkorea.or.kr" ||
+        url.username ||
+        url.password ||
+        url.hash
       ) {
         return null;
       }
@@ -132,7 +196,7 @@
       typeof place.name === "string" ? place.name : "이름 정보 없음";
     const category = document.createElement("span");
     category.className = "places-result__category";
-    category.textContent = CATEGORY_LABELS[place.category] || place.category || "장소";
+    category.textContent = CATEGORY_LABELS[place.category] || "장소";
     heading.append(name, category);
     card.appendChild(heading);
 
@@ -190,22 +254,26 @@
     state.results.forEach((place) => container.appendChild(renderResult(place)));
   }
 
-  function publishMarkers() {
-    const markers = state.results
-      .filter(
-        (place) =>
-          typeof place.lat === "number" && typeof place.lng === "number"
-      )
-      .map((place, index) => ({
-        id: `${place.source || "source"}:${place.source_id || index}`,
-        lat: place.lat,
-        lng: place.lng,
-        name: place.name,
-        category: place.category,
-      }));
+  function publishMarkers(categories = CATEGORIES, clearAll = false) {
+    const changedCategories = categories.filter((category) =>
+      CATEGORIES.includes(category)
+    );
+    const resultsByCategory = {};
+    CATEGORIES.forEach((category) => {
+      resultsByCategory[category] = state.resultsByCategory[category].slice();
+    });
+    const markers = changedCategories.flatMap((category) =>
+      markersFor(state.resultsByCategory[category])
+    );
     window.dispatchEvent(
       new CustomEvent("kto:places-results", {
-        detail: { results: state.results.slice(), markers },
+        detail: {
+          results: state.results.slice(),
+          resultsByCategory,
+          categories: changedCategories,
+          markers,
+          clearAll,
+        },
       })
     );
   }
@@ -235,10 +303,13 @@
       activeController = null;
     }
     state.status = "idle";
-    state.results = [];
+    CATEGORIES.forEach((category) => {
+      state.resultsByCategory[category] = [];
+    });
+    replaceResults();
     state.response = null;
     state.error = null;
-    publishMarkers();
+    publishMarkers(CATEGORIES, true);
     if (message) {
       setStatus(message, "active");
     }
@@ -266,6 +337,16 @@
     };
   }
 
+  function requestIsCurrent(requestId, destinationAtRequest, categoriesAtRequest) {
+    return (
+      requestId === state.requestId &&
+      destinationAtRequest ===
+        destinationFingerprint(latestDestination || currentDestination()) &&
+      categoryFingerprint(categoriesAtRequest) ===
+        categoryFingerprint(selectedCategories())
+    );
+  }
+
   async function search() {
     const request = buildRequest();
     if (!request) {
@@ -275,10 +356,12 @@
       activeController.abort();
     }
     const requestId = ++state.requestId;
-    const destinationAtRequest = destinationFingerprint(latestDestination);
+    const categoriesAtRequest = request.categories.slice();
+    const destinationAtRequest = destinationFingerprint(
+      latestDestination || currentDestination()
+    );
     activeController = new AbortController();
     state.status = "loading";
-    state.results = [];
     state.response = null;
     state.error = null;
     render();
@@ -291,10 +374,7 @@
         signal: activeController.signal,
       });
       const payload = await response.json().catch(() => null);
-      if (
-        requestId !== state.requestId ||
-        destinationAtRequest !== destinationFingerprint(latestDestination)
-      ) {
+      if (!requestIsCurrent(requestId, destinationAtRequest, categoriesAtRequest)) {
         return false;
       }
       if (!response.ok || !payload || !Array.isArray(payload.results)) {
@@ -305,11 +385,15 @@
             : "장소 검색에 실패했습니다."
         );
       }
-      state.response = payload;
-      state.results = payload.results;
+      const grouped = groupResults(payload.results);
+      categoriesAtRequest.forEach((category) => {
+        state.resultsByCategory[category] = grouped[category];
+      });
+      replaceResults();
+      state.response = { ...payload, results: state.results.slice() };
       state.status = payload.complete ? "success" : "partial";
       render();
-      publishMarkers();
+      publishMarkers(categoriesAtRequest);
       if (payload.complete) {
         setStatus(
           `${payload.results.length}개의 장소 후보를 확인했습니다${
@@ -331,18 +415,18 @@
       if (error && error.name === "AbortError") {
         return false;
       }
-      if (
-        requestId !== state.requestId ||
-        destinationAtRequest !== destinationFingerprint(latestDestination)
-      ) {
+      if (!requestIsCurrent(requestId, destinationAtRequest, categoriesAtRequest)) {
         return false;
       }
+      categoriesAtRequest.forEach((category) => {
+        state.resultsByCategory[category] = [];
+      });
+      replaceResults();
       state.status = "error";
-      state.results = [];
       state.response = null;
       state.error = error instanceof Error ? error.message : String(error);
       render();
-      publishMarkers();
+      publishMarkers(categoriesAtRequest);
       setStatus(state.error, "error");
       return false;
     } finally {
@@ -361,9 +445,25 @@
     const changed =
       destinationFingerprint(destination) !== destinationFingerprint(latestDestination);
     latestDestination = destination;
-    if (changed && (state.results.length || state.status === "loading")) {
+    if (
+      changed &&
+      (state.results.length || state.status === "loading" || activeController)
+    ) {
       clearResult("목적지가 변경되어 장소 결과를 초기화했습니다.");
       return;
+    }
+    render();
+  }
+
+  function handleCategoryChanged() {
+    if (activeController) {
+      activeController.abort();
+      activeController = null;
+      state.requestId += 1;
+      state.status = "idle";
+      state.response = null;
+      state.error = null;
+      setStatus("장소 종류가 변경되었습니다. 필요하면 다시 검색하세요.", "active");
     }
     render();
   }
@@ -376,29 +476,24 @@
     getState: () => ({
       status: state.status,
       results: state.results.slice(),
+      resultsByCategory: {
+        restaurant: state.resultsByCategory.restaurant.slice(),
+        attraction: state.resultsByCategory.attraction.slice(),
+      },
       response: state.response,
       error: state.error,
     }),
-    getMarkers: () => state.results
-      .filter(
-        (place) =>
-          typeof place.lat === "number" && typeof place.lng === "number"
-      )
-      .map((place, index) => ({
-        id: `${place.source || "source"}:${place.source_id || index}`,
-        lat: place.lat,
-        lng: place.lng,
-        name: place.name,
-        category: place.category,
-      })),
+    getMarkers: () => CATEGORIES.flatMap((category) =>
+      markersFor(state.resultsByCategory[category])
+    ),
   });
 
   document.addEventListener("DOMContentLoaded", () => {
     latestDestination = currentDestination();
-    ["restaurant", "attraction"].forEach((category) => {
+    CATEGORIES.forEach((category) => {
       const checkbox = getElement(`places-category-${category}`);
       if (checkbox) {
-        checkbox.addEventListener("change", render);
+        checkbox.addEventListener("change", handleCategoryChanged);
       }
     });
     const button = getElement("places-search");

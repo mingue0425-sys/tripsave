@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse, urlunsplit
 
 from bs4 import BeautifulSoup, Tag
 
@@ -43,6 +43,7 @@ _JSON_COORDINATE_RE = re.compile(
     r"[\"']longitude[\"']\s*:\s*[\"'](?P<lng>-?\d+(?:\.\d+)?)[\"']",
     re.IGNORECASE | re.DOTALL,
 )
+_VISITKOREA_HOSTS = frozenset({"english.visitkorea.or.kr"})
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,22 @@ class PlaceCard:
     category: PlaceCategory
     source_url: str
     raw_category: str | None = None
+
+
+def normalize_source_url(value: str, *, base_url: str) -> str | None:
+    """Keep source links on the fixed VisitKorea HTTPS host."""
+
+    parsed = urlparse(urljoin(base_url, value))
+    if (
+        parsed.scheme != "https"
+        or (parsed.hostname or "").lower() not in _VISITKOREA_HOSTS
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+        or not parsed.path
+    ):
+        return None
+    return urlunsplit(("https", parsed.hostname, parsed.path, parsed.query, ""))
 
 
 def clean_text(value: str | None) -> str | None:
@@ -186,7 +203,10 @@ def parse_search_cards(
         anchor = item.select_one('a[href*="contentsView"]')
         if anchor is None:
             continue
-        parsed_url = urlparse(urljoin(base_url, anchor.get("href", "")))
+        source_url = normalize_source_url(anchor.get("href", ""), base_url=base_url)
+        if source_url is None:
+            continue
+        parsed_url = urlparse(source_url)
         params = parse_qs(parsed_url.query)
         source_ids = params.get("vcontsId", [])
         if not source_ids or not source_ids[0].strip():
@@ -202,7 +222,7 @@ def parse_search_cards(
                 source_id=source_ids[0].strip(),
                 name=name,
                 category=category,
-                source_url=urljoin(base_url, anchor.get("href", "")),
+                source_url=source_url,
                 raw_category=raw_category,
             )
         )

@@ -108,3 +108,34 @@
 .places-status--partial {
   color: #9a6700;
 }
+
+.kto-place-pin {
+  align-items: center;
+  border: 2px solid #fff;
+  border-radius: 50% 50% 50% 0;
+  box-shadow: 0 2px 5px rgb(23 33 43 / 35%);
+  color: #fff;
+  display: flex;
+  height: 29px;
+  justify-content: center;
+  transform: rotate(-45deg);
+  width: 29px;
+}
+
+.kto-place-pin__letter {
+  font-size: 0.66rem;
+  font-weight: 850;
+  transform: rotate(45deg);
+}
+
+.kto-place-pin--accommodation {
+  background: #8a5a1f;
+}
+
+.kto-place-pin--restaurant {
+  background: #2563eb;
+}
+
+.kto-place-pin--attraction {
+  background: #7c3aed;
+}

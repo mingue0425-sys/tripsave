@@ -133,15 +133,22 @@
     return `₩${new Intl.NumberFormat("ko-KR").format(value)}`;
   }
 
+  function hasKnownPrice(value) {
+    return Number.isFinite(value) && value > 0;
+  }
+
   function formatRating(place) {
-    if (typeof place.rating !== "number" || typeof place.rating_scale !== "number") {
+    if (
+      !Number.isFinite(place.rating) ||
+      !Number.isFinite(place.rating_scale)
+    ) {
       return "평점 미확인";
     }
     return `평점 ${place.rating.toFixed(1)} / ${place.rating_scale}`;
   }
 
   function formatReviews(place) {
-    return typeof place.review_count === "number"
+    return Number.isFinite(place.review_count)
       ? `리뷰 ${new Intl.NumberFormat("ko-KR").format(place.review_count)}개`
       : "리뷰 수 미확인";
   }
@@ -152,7 +159,13 @@
     }
     try {
       const url = new URL(value);
-      if (url.protocol !== "https:" || !["booking.com", "www.booking.com"].includes(url.hostname)) {
+      if (
+        url.protocol !== "https:" ||
+        !["booking.com", "www.booking.com"].includes(url.hostname) ||
+        url.username ||
+        url.password ||
+        url.hash
+      ) {
         return null;
       }
       return url.href;
@@ -174,7 +187,7 @@
     name.textContent = typeof place.name === "string" ? place.name : "이름 미확인 숙소";
     const price = document.createElement("span");
     price.className = "accommodation-result__price";
-    if (offer.final_price_krw !== null && offer.final_price_krw !== undefined) {
+    if (hasKnownPrice(offer.final_price_krw)) {
       price.textContent = formatPrice(offer.final_price_krw);
     } else if (offer.availability === false) {
       price.textContent = "예약 불가";
@@ -203,11 +216,11 @@
       card.appendChild(room);
     }
 
-    if (offer.base_price_krw !== null && offer.base_price_krw !== undefined) {
+    if (hasKnownPrice(offer.base_price_krw)) {
       const breakdown = document.createElement("p");
       breakdown.className = "accommodation-result__meta";
       const values = [`기본 ${formatPrice(offer.base_price_krw)}`];
-      if (offer.taxes_krw !== null && offer.taxes_krw !== undefined) {
+      if (Number.isFinite(offer.taxes_krw) && offer.taxes_krw >= 0) {
         values.push(`세금·수수료 ${formatPrice(offer.taxes_krw)}`);
       }
       breakdown.textContent = values.join(" · ");
@@ -249,6 +262,71 @@
     state.results.forEach((result) => container.appendChild(renderResult(result)));
   }
 
+  function validCoordinates(place) {
+    return (
+      place &&
+      Number.isFinite(place.lat) &&
+      Number.isFinite(place.lng) &&
+      place.lat >= -90 &&
+      place.lat <= 90 &&
+      place.lng >= -180 &&
+      place.lng <= 180
+    );
+  }
+
+  function accommodationMarkers(results) {
+    return results
+      .map((result, index) => {
+        const place = result && result.place;
+        if (!validCoordinates(place)) {
+          return null;
+        }
+        const offer = result && Array.isArray(result.offers) ? result.offers[0] : null;
+        return {
+          id: `accommodation:${place.source || "source"}:${
+            place.source_id || index
+          }`,
+          category: "accommodation",
+          lat: place.lat,
+          lng: place.lng,
+          name: place.name,
+          address: place.address,
+          source: place.source,
+          rating: place.rating,
+          rating_scale: place.rating_scale,
+          review_count: place.review_count,
+          price_label:
+            offer && hasKnownPrice(offer.final_price_krw)
+              ? formatPrice(offer.final_price_krw)
+              : "가격 미확인",
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function publishMarkers(results = state.results, clearAll = false) {
+    window.dispatchEvent(
+      new CustomEvent("kto:accommodation-results", {
+        detail: {
+          markers: accommodationMarkers(results),
+          clearAll,
+        },
+      })
+    );
+  }
+
+  function currentInputFingerprint() {
+    const destination = latestDestination || currentDestination();
+    return [
+      destinationFingerprint(destination),
+      getElement("accommodation-checkin")?.value || "",
+      getElement("accommodation-checkout")?.value || "",
+      getElement("accommodation-adults")?.value || "",
+      getElement("accommodation-children")?.value || "",
+      "20",
+    ].join("|");
+  }
+
   function render() {
     const button = getElement("accommodation-search");
     const summary = getElement("accommodation-summary");
@@ -280,6 +358,7 @@
     state.results = [];
     state.response = null;
     state.error = null;
+    publishMarkers([], true);
     if (message) {
       setStatus(message, "active");
     }
@@ -295,12 +374,16 @@
       activeController.abort();
     }
     const requestId = ++state.requestId;
-    const destinationAtRequest = destinationFingerprint(latestDestination);
+    const destinationAtRequest = destinationFingerprint(
+      latestDestination || currentDestination()
+    );
+    const inputAtRequest = currentInputFingerprint();
     activeController = new AbortController();
     state.status = "loading";
     state.results = [];
     state.response = null;
     state.error = null;
+    publishMarkers([], true);
     render();
     setStatus("공개 숙박 페이지에서 조건에 맞는 숙소를 확인하고 있습니다.", "active");
     try {
@@ -313,7 +396,8 @@
       const payload = await response.json().catch(() => null);
       if (
         requestId !== state.requestId ||
-        destinationAtRequest !== destinationFingerprint(latestDestination)
+        destinationAtRequest !== destinationFingerprint(latestDestination) ||
+        inputAtRequest !== currentInputFingerprint()
       ) {
         return false;
       }
@@ -329,6 +413,7 @@
       state.results = payload.results;
       state.status = payload.complete ? "success" : "partial";
       render();
+      publishMarkers(state.results);
       if (payload.complete) {
         setStatus(
           `${payload.results.length}개의 숙소 후보를 확인했습니다${payload.cache_hit ? " (캐시)" : ""}.`,
@@ -350,7 +435,8 @@
       }
       if (
         requestId !== state.requestId ||
-        destinationAtRequest !== destinationFingerprint(latestDestination)
+        destinationAtRequest !== destinationFingerprint(latestDestination) ||
+        inputAtRequest !== currentInputFingerprint()
       ) {
         return false;
       }

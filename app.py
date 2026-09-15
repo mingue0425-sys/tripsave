@@ -1,7 +1,9 @@
-"""FastAPI entry point for Korea Trip Optimizer V0.5.1."""
+"""FastAPI entry point for Korea Trip Optimizer V1.0.0."""
 
-from contextlib import asynccontextmanager
+import asyncio
 import logging
+from contextlib import asynccontextmanager
+from threading import Lock
 
 from fastapi import FastAPI, Query, Request
 from fastapi.exception_handlers import request_validation_exception_handler
@@ -10,31 +12,14 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from config import (
-    APP_VERSION,
-    DRIVING_COST_API_URL,
-    FUEL_API_URL,
-    FUEL_STATUS_URL,
-    OSRM_BASE_URL,
-    OSRM_CONNECT_TIMEOUT_S,
-    OSRM_REQUEST_TIMEOUT_S,
-    ROUTE_API_URL,
-    STATIC_DIR,
-    TOLL_API_URL,
-    TOLL_DEBUG_MODE,
-    TOLL_INDEX_DB,
-    TOLL_STATUS_URL,
-    TEMPLATES_DIR,
-    map_config,
-)
-from backend.places import search_places
-from backend.places.models import PlaceSearchRequest, PlaceSearchResponse
-from backend.places.service import PLACES_API_URL, PlaceService
 from backend.accommodation.models import (
     AccommodationSearchRequest,
     AccommodationSearchResponse,
 )
 from backend.accommodation.service import ACCOMMODATION_API_URL, AccommodationService
+from backend.city_search import search_places
+from backend.entities import EntityResolver, EntityResolveRequest, EntityResolveResponse
+from backend.entities.repository import EntityResolutionRepository
 from backend.fuel.errors import FuelServiceError
 from backend.fuel.models import (
     DrivingCostRequest,
@@ -42,7 +27,24 @@ from backend.fuel.models import (
     FuelCalculationRequest,
     FuelResponse,
 )
-from backend.fuel.service import DrivingCostService, FuelPriceService, make_fuel_response
+from backend.fuel.service import (
+    DrivingCostService,
+    FuelPriceService,
+    make_fuel_response,
+)
+from backend.places.models import (
+    PlaceCategory,
+    PlaceDestination,
+    PlaceSearchRequest,
+    PlaceSearchResponse,
+)
+from backend.places.service import PLACES_API_URL, places_service
+from backend.recommendations import (
+    RankingResult,
+    RecommendationError,
+    RecommendationRankRequest,
+    RecommendationService,
+)
 from backend.routing.errors import (
     InvalidRouteInputError,
     NoRouteError,
@@ -51,12 +53,44 @@ from backend.routing.errors import (
     RoutingError,
     RoutingTimeoutError,
 )
+from backend.routing.identity import make_route_id
 from backend.routing.models import RouteRequest, RouteResponse
 from backend.routing.osrm import OSRMClient
 from backend.tolls.errors import TollServiceError
 from backend.tolls.models import TollCalculationRequest, TollResponse
 from backend.tolls.service import TollCalculator
-
+from backend.trips import (
+    SourceDataStatus,
+    TripAssemblyError,
+    TripCandidate,
+    TripCandidateRequest,
+    TripCandidateResponse,
+    TripCandidateService,
+)
+from config import (
+    ACCOMMODATION_CACHE_DB,
+    APP_VERSION,
+    CANONICAL_PLACES_API_URL,
+    DRIVING_COST_API_URL,
+    ENTITY_RESOLUTION_DB,
+    ENTITY_RESOLVE_API_URL,
+    FUEL_API_URL,
+    FUEL_STATUS_URL,
+    OSRM_BASE_URL,
+    OSRM_CONNECT_TIMEOUT_S,
+    OSRM_REQUEST_TIMEOUT_S,
+    RECOMMENDATIONS_API_URL,
+    ROUTE_API_URL,
+    STATIC_DIR,
+    TEMPLATES_DIR,
+    TOLL_API_URL,
+    TOLL_DEBUG_MODE,
+    TOLL_INDEX_DB,
+    TOLL_STATUS_URL,
+    TRIP_CANDIDATES_API_URL,
+    map_config,
+)
+from crawler.accommodation.errors import AccommodationSourceError
 
 LOGGER = logging.getLogger(__name__)
 
@@ -74,22 +108,66 @@ driving_cost_service = DrivingCostService(
     fuel_service=fuel_price_service,
     routing_client=routing_client,
 )
-accommodation_service = AccommodationService(database_path=TOLL_INDEX_DB)
-places_service = PlaceService()
+accommodation_service = AccommodationService(database_path=ACCOMMODATION_CACHE_DB)
+entity_repository = EntityResolutionRepository(ENTITY_RESOLUTION_DB)
+entity_resolver = EntityResolver(overrides=entity_repository.load_overrides())
+trip_candidate_service = TripCandidateService()
+recommendation_service = RecommendationService()
+
+# Candidate assembly is intentionally ephemeral in V0.9.  This bounded local
+# registry lets the V1.0 API accept candidate IDs without creating a durable
+# user/session database or losing the full-candidate request path.
+_candidate_registry: dict[str, TripCandidate] = {}
+_candidate_registry_lock = Lock()
+_MAX_CANDIDATE_REGISTRY_SIZE = 1_000
+_candidate_registry_created_at = None
+
+
+def _remember_candidates(response: TripCandidateResponse) -> None:
+    global _candidate_registry_created_at
+    with _candidate_registry_lock:
+        # The registry represents the latest local candidate set.  Replacing
+        # it prevents a destination/date/vehicle change from leaving old IDs
+        # rankable through the candidate-ID API.
+        if (
+            _candidate_registry_created_at is not None
+            and response.created_at < _candidate_registry_created_at
+        ):
+            return
+        _candidate_registry.clear()
+        _candidate_registry_created_at = response.created_at
+        for candidate in response.candidates:
+            _candidate_registry[candidate.id] = candidate
+        while len(_candidate_registry) > _MAX_CANDIDATE_REGISTRY_SIZE:
+            _candidate_registry.pop(next(iter(_candidate_registry)))
+
+
+def _lookup_candidates(candidate_ids: list[str]) -> list[TripCandidate]:
+    with _candidate_registry_lock:
+        return [
+            _candidate_registry[candidate_id]
+            for candidate_id in candidate_ids
+            if candidate_id in _candidate_registry
+        ]
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Keep reusable toll clients alive, then close them on shutdown."""
+    """Keep reusable clients alive, then close every feature on shutdown."""
 
     try:
         await toll_calculator.warmup()
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - browser warm-up must not block app startup
         # HTTP remains the primary source; a missing/unlaunchable browser must
         # not prevent the local route/cost service from starting.
         LOGGER.warning("Toll browser warm-up unavailable; fallback stays lazy: %s", error)
-    yield
-    await toll_calculator.close()
+    try:
+        yield
+    finally:
+        await accommodation_service.close()
+        await places_service.close()
+        await toll_calculator.close()
+        entity_repository.close()
 
 
 app = FastAPI(title="Korea Trip Optimizer", version=APP_VERSION, lifespan=lifespan)
@@ -161,6 +239,28 @@ async def request_validation_handler(
                 },
             },
         )
+    if request.url.path == TRIP_CANDIDATES_API_URL and request.method == "POST":
+        return JSONResponse(
+            status_code=422,
+            content={
+                "status": "error",
+                "error": {
+                    "code": "INVALID_REQUEST",
+                    "message": "여행 후보 생성 요청이 올바르지 않습니다.",
+                },
+            },
+        )
+    if request.url.path == RECOMMENDATIONS_API_URL and request.method == "POST":
+        return JSONResponse(
+            status_code=422,
+            content={
+                "status": "error",
+                "error": {
+                    "code": "INVALID_REQUEST",
+                    "message": "추천 순위 생성 요청이 올바르지 않습니다.",
+                },
+            },
+        )
     return await request_validation_exception_handler(request, exc)
 
 
@@ -228,6 +328,310 @@ async def search_accommodations(
     return await accommodation_service.search(request)
 
 
+@app.post(
+    ENTITY_RESOLVE_API_URL,
+    response_model=EntityResolveResponse,
+    response_model_exclude_none=True,
+)
+async def resolve_entities(request: EntityResolveRequest) -> EntityResolveResponse:
+    """Resolve caller-supplied source records without fetching any URL."""
+
+    def resolve_and_persist() -> EntityResolveResponse:
+        result = entity_resolver.resolve(request.records, offers=request.offers)
+        entity_repository.persist(result)
+        return result
+
+    return await asyncio.to_thread(resolve_and_persist)
+
+
+def _place_category_status(
+    response: PlaceSearchResponse,
+    category: PlaceCategory,
+) -> SourceDataStatus:
+    results = [place for place in response.results if place.category == category]
+    issues = [issue for issue in response.issues if issue.category == category]
+    if issues and results:
+        return SourceDataStatus.PARTIAL
+    if issues:
+        return SourceDataStatus.UNAVAILABLE
+    return SourceDataStatus.OK if results else SourceDataStatus.EMPTY
+
+
+def _accommodation_status(response: AccommodationSearchResponse) -> SourceDataStatus:
+    if response.issues and response.results:
+        return SourceDataStatus.PARTIAL
+    if response.issues:
+        return SourceDataStatus.UNAVAILABLE
+    return SourceDataStatus.OK if response.results else SourceDataStatus.EMPTY
+
+
+def _issue_codes(issues: list[object]) -> list[str]:
+    return [str(getattr(issue, "code", "SOURCE_ERROR")) for issue in issues]
+
+
+async def _load_trip_candidate_dependencies(
+    request: TripCandidateRequest,
+) -> tuple[
+    object,
+    object,
+    list[object],
+    list[object],
+    dict[str, SourceDataStatus],
+    list[str],
+]:
+    """Reuse existing services while keeping each source failure isolated."""
+
+    route = request.route
+    driving_cost = request.driving_cost
+    statuses = dict(request.source_statuses)
+    warnings = list(request.source_warnings)
+
+    if route is None:
+        try:
+            route = await routing_client.route(request.origin, request.destination)
+        except RoutingError as error:
+            statuses.setdefault("driving", SourceDataStatus.UNAVAILABLE)
+            warnings.append(error.code)
+            LOGGER.warning("Trip candidate route unavailable: %s", error)
+        except Exception:
+            statuses.setdefault("driving", SourceDataStatus.UNAVAILABLE)
+            warnings.append("ROUTE_UNAVAILABLE")
+            LOGGER.exception("Trip candidate route lookup failed")
+    if route is not None and route.route_id is None:
+        route = route.model_copy(update={
+            "route_id": make_route_id(request.origin, request.destination, route)
+        })
+
+    if driving_cost is None and route is not None:
+        driving_request = DrivingCostRequest(
+            route_id=route.route_id,
+            origin=request.origin,
+            destination=request.destination,
+            route=route,
+            fuel_type=request.vehicle.fuel_type,
+            fuel_efficiency_km_per_l=request.vehicle.fuel_efficiency_km_per_l,
+            vehicle_class=request.vehicle.vehicle_class,
+            round_trip_mode=request.vehicle.round_trip_mode,
+        )
+        try:
+            driving_response = await driving_cost_service.calculate(driving_request)
+            driving_cost = driving_response.driving_cost
+        except (FuelServiceError, TollServiceError) as error:
+            statuses.setdefault("driving", SourceDataStatus.UNAVAILABLE)
+            warnings.append(str(getattr(error, "code", "DRIVING_COST_UNAVAILABLE")))
+            LOGGER.warning("Trip candidate driving cost unavailable: %s", error)
+        except Exception:
+            statuses.setdefault("driving", SourceDataStatus.UNAVAILABLE)
+            warnings.append("DRIVING_COST_UNAVAILABLE")
+            LOGGER.exception("Trip candidate driving-cost lookup failed")
+    if "driving" not in statuses:
+        statuses["driving"] = (
+            SourceDataStatus.OK
+            if driving_cost is not None and driving_cost.round_trip.complete
+            else SourceDataStatus.PARTIAL
+            if driving_cost is not None
+            else SourceDataStatus.UNAVAILABLE
+        )
+
+    canonical_places: list[object] = []
+    offers: list[object] = []
+    has_supplied_place_data = any(
+        value is not None
+        for value in (
+            request.canonical_places,
+            request.accommodations,
+            request.restaurants,
+            request.attractions,
+        )
+    )
+    if has_supplied_place_data:
+        # The assembly service reads the category-specific fields directly.
+        canonical_places = list(request.canonical_places or [])
+        offers = list(request.offers or [])
+    else:
+        raw_records: list[object] = []
+        accommodation_response: AccommodationSearchResponse | None = None
+        places_response: PlaceSearchResponse | None = None
+        nights = (request.end_date - request.start_date).days
+        if nights > 0 and request.offers is None:
+            try:
+                accommodation_response = await accommodation_service.search(
+                    AccommodationSearchRequest(
+                        destination=request.destination,
+                        checkin=request.start_date,
+                        checkout=request.end_date,
+                        adults=request.adults,
+                        children=request.children,
+                    )
+                )
+                statuses["accommodation"] = _accommodation_status(accommodation_response)
+                warnings.extend(_issue_codes(accommodation_response.issues))
+                for result in accommodation_response.results:
+                    raw_records.append(result.place)
+                    offers.extend(result.offers)
+            except AccommodationSourceError as error:
+                statuses["accommodation"] = SourceDataStatus.UNAVAILABLE
+                warnings.append(str(getattr(error, "code", "ACCOMMODATION_SOURCE_FAILED")))
+                LOGGER.warning("Trip candidate accommodation source failed: %s", error)
+            except Exception:
+                statuses["accommodation"] = SourceDataStatus.UNAVAILABLE
+                warnings.append("ACCOMMODATION_SOURCE_UNAVAILABLE")
+                LOGGER.exception("Trip candidate accommodation lookup failed")
+        elif nights == 0:
+            statuses.setdefault("accommodation", SourceDataStatus.NOT_REQUIRED)
+        else:
+            offers = list(request.offers or [])
+
+        try:
+            places_response = await places_service.search(
+                PlaceSearchRequest(
+                    destination=PlaceDestination(
+                        lat=request.destination.lat,
+                        lng=request.destination.lng,
+                        label=request.destination.label or "destination",
+                    ),
+                    categories=[PlaceCategory.RESTAURANT, PlaceCategory.ATTRACTION],
+                )
+            )
+            raw_records.extend(places_response.results)
+            statuses["restaurants"] = _place_category_status(
+                places_response, PlaceCategory.RESTAURANT
+            )
+            statuses["attractions"] = _place_category_status(
+                places_response, PlaceCategory.ATTRACTION
+            )
+            warnings.extend(_issue_codes(places_response.issues))
+        except Exception:
+            statuses["restaurants"] = SourceDataStatus.UNAVAILABLE
+            statuses["attractions"] = SourceDataStatus.UNAVAILABLE
+            warnings.append("PLACES_SOURCE_UNAVAILABLE")
+            LOGGER.exception("Trip candidate places lookup failed")
+
+        if raw_records:
+            try:
+                resolved = await asyncio.to_thread(
+                    entity_resolver.resolve,
+                    raw_records,
+                    offers=offers,
+                )
+                canonical_places = list(resolved.canonical_places)
+            except Exception:
+                warnings.append("ENTITY_RESOLUTION_UNAVAILABLE")
+                LOGGER.exception("Trip candidate entity resolution failed")
+        if "accommodation" not in statuses:
+            statuses["accommodation"] = (
+                SourceDataStatus.OK if offers else SourceDataStatus.UNAVAILABLE
+            )
+        statuses.setdefault("restaurants", SourceDataStatus.EMPTY)
+        statuses.setdefault("attractions", SourceDataStatus.EMPTY)
+
+    return route, driving_cost, canonical_places, offers, statuses, list(dict.fromkeys(warnings))
+
+
+@app.post(
+    TRIP_CANDIDATES_API_URL,
+    response_model=TripCandidateResponse,
+)
+async def create_trip_candidates(
+    request: TripCandidateRequest,
+) -> TripCandidateResponse | JSONResponse:
+    """Assemble one or more candidates from existing route/source services."""
+
+    try:
+        route, driving_cost, canonical_places, offers, statuses, warnings = (
+            await _load_trip_candidate_dependencies(request)
+        )
+        assembly_request = request.model_copy(
+            update={
+                "route": route,
+                "driving_cost": driving_cost,
+                "canonical_places": canonical_places,
+                "offers": offers,
+                "source_statuses": statuses,
+                "source_warnings": warnings,
+            }
+        )
+        response = await asyncio.to_thread(trip_candidate_service.assemble, assembly_request)
+        _remember_candidates(response)
+        return response
+    except TripAssemblyError as error:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "status": "error",
+                "error": {"code": "INVALID_CANDIDATE_DEPENDENCY", "message": str(error)},
+            },
+        )
+
+
+@app.post(
+    RECOMMENDATIONS_API_URL,
+    response_model=RankingResult,
+)
+async def rank_recommendations(
+    request: RecommendationRankRequest,
+) -> RankingResult | JSONResponse:
+    """Rank supplied/local candidates without fetching or recalculating them."""
+
+    if request.candidates:
+        candidates = list(request.candidates)
+        if request.candidate_ids:
+            by_id = {candidate.id: candidate for candidate in candidates}
+            candidates = [by_id[candidate_id] for candidate_id in request.candidate_ids]
+    else:
+        candidates = _lookup_candidates(request.candidate_ids or [])
+        if len(candidates) != len(request.candidate_ids or []):
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "status": "error",
+                    "error": {
+                        "code": "CANDIDATES_NOT_FOUND",
+                        "message": "요청한 여행 후보가 만료되었거나 존재하지 않습니다.",
+                    },
+                },
+            )
+    try:
+        return await asyncio.to_thread(
+            recommendation_service.rank,
+            candidates,
+            request.mode,
+            custom_weights=request.custom_weights,
+            limit=request.limit,
+        )
+    except RecommendationError as error:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "status": "error",
+                "error": {"code": "INVALID_RECOMMENDATION_REQUEST", "message": str(error)},
+            },
+        )
+
+
+@app.get(CANONICAL_PLACES_API_URL)
+async def list_canonical_places(
+    category: str | None = Query(default=None, max_length=40),
+    limit: int = Query(default=500, ge=1, le=5_000),
+) -> dict[str, object]:
+    """Read persisted V0.8 derived entities; raw search APIs stay unchanged."""
+
+    places = await asyncio.to_thread(entity_repository.list_canonical, category=category, limit=limit)
+    return {"count": len(places), "results": [place.model_dump(mode="json") for place in places]}
+
+
+@app.get("/api/entities/debug/{canonical_id}")
+async def debug_canonical_place(canonical_id: str) -> JSONResponse:
+    """Development explainability view for one persisted canonical entity."""
+
+    if not TOLL_DEBUG_MODE:
+        return JSONResponse(status_code=404, content={"status": "not_found"})
+    value = await asyncio.to_thread(entity_repository.debug, canonical_id)
+    if value is None:
+        return JSONResponse(status_code=404, content={"status": "not_found"})
+    return JSONResponse(status_code=200, content=value)
+
+
 def routing_error_response(error: RoutingError) -> JSONResponse:
     return JSONResponse(
         status_code=error.http_status,
@@ -271,7 +675,7 @@ async def create_route(request: RouteRequest) -> RouteResponse | JSONResponse:
     except RoutingTimeoutError as error:
         return routing_error_response(error)
     except RoutingError as error:
-        LOGGER.exception("Unhandled routing failure: %s", error)
+        LOGGER.exception("Unhandled routing failure")
         return routing_error_response(error)
 
     return RouteResponse(status="ok", route=route)

@@ -6,10 +6,11 @@ import asyncio
 import math
 from datetime import datetime, timezone
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 import httpx
 
-from backend.places import load_places, normalize_query
+from backend.city_search import load_places, normalize_query
 from backend.places.models import PlaceCategory, PlaceRecord
 from crawler.places.base import PlaceDestination, PlaceSource, SourceIssue
 from crawler.places.errors import (
@@ -25,6 +26,18 @@ from crawler.places.parser import parse_place_detail, parse_search_cards
 BASE_URL = "https://english.visitkorea.or.kr"
 SEARCH_URL = f"{BASE_URL}/totalSearch/search.do"
 SOURCE_NAME = "visitkorea"
+_ALLOWED_HOSTS = frozenset({"english.visitkorea.or.kr"})
+
+
+def _is_allowed_source_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return (
+        parsed.scheme == "https"
+        and (parsed.hostname or "").lower() in _ALLOWED_HOSTS
+        and not parsed.username
+        and not parsed.password
+        and not parsed.fragment
+    )
 
 
 class VisitKoreaSource(PlaceSource):
@@ -49,7 +62,7 @@ class VisitKoreaSource(PlaceSource):
     def _default_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             timeout=httpx.Timeout(self.timeout_seconds, connect=min(5.0, self.timeout_seconds)),
-            follow_redirects=True,
+            follow_redirects=False,
             headers={"Accept-Language": "en-US,en;q=0.8"},
         )
 
@@ -132,6 +145,13 @@ class VisitKoreaSource(PlaceSource):
         *,
         params: dict[str, str] | None = None,
     ) -> Any:
+        if not _is_allowed_source_url(str(url)):
+            raise PlaceSourceError(
+                "VisitKorea source URL is outside the fixed public host.",
+                code="SOURCE_ERROR",
+                public_message="The public place source URL was rejected.",
+                retriable=False,
+            )
         try:
             response = await client.get(url, params=params)
         except httpx.TimeoutException as error:
@@ -141,6 +161,14 @@ class VisitKoreaSource(PlaceSource):
         status_code = int(getattr(response, "status_code", 0))
         if status_code < 200 or status_code >= 300:
             raise SourceHTTPError(status_code)
+        response_url = getattr(response, "url", None)
+        if response_url is not None and not _is_allowed_source_url(str(response_url)):
+            raise PlaceSourceError(
+                "VisitKorea redirected outside the fixed public host.",
+                code="SOURCE_ERROR",
+                public_message="The public place source redirected to an unapproved host.",
+                retriable=False,
+            )
         return response
 
 
@@ -167,7 +195,7 @@ def _distance_km(lat_a: float, lng_a: float, lat_b: float, lng_b: float) -> floa
         math.sin(delta_lat / 2) ** 2
         + math.cos(lat_a_rad) * math.cos(lat_b_rad) * math.sin(delta_lng / 2) ** 2
     )
-    return 2 * radius * math.asin(math.sqrt(haversine))
+    return 2 * radius * math.asin(math.sqrt(min(1.0, max(0.0, haversine))))
 
 
 def _is_non_attraction(record: PlaceRecord) -> bool:

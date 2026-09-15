@@ -112,7 +112,7 @@ def test_empty_source_result_is_complete_and_not_an_error(tmp_path) -> None:
     response = asyncio.run(service.search(make_request()))
 
     assert response.complete is True
-    assert response.source_status == "fresh"
+    assert response.source_status == "empty"
     assert response.results == []
 
 

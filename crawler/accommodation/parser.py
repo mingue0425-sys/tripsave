@@ -17,13 +17,13 @@ from bs4 import BeautifulSoup, Tag
 
 from backend.accommodation.models import (
     AccommodationOffer,
+    AccommodationPriceBasis,
     AccommodationResult,
     PlaceRecord,
 )
 from crawler.accommodation.errors import AccommodationPageChangedError
 
-
-PARSER_VERSION = "booking-search-dom-v1"
+PARSER_VERSION = "booking-search-dom-v2"
 BOOKING_HOSTS = frozenset({"booking.com", "www.booking.com"})
 
 _AMOUNT_PREFIX_RE = re.compile(
@@ -36,6 +36,8 @@ _RATING_RE = re.compile(r"(?<![0-9])([0-9]{1,2}(?:[.,][0-9]+)?)(?![0-9])")
 _REVIEW_RE = re.compile(r"([0-9][0-9,\.]*)\s+reviews?\b", re.IGNORECASE)
 _DISTANCE_RE = re.compile(r"([0-9]+(?:[.,][0-9]+)?)\s*km\b", re.IGNORECASE)
 _PROPERTY_PATH_RE = re.compile(r"^/hotel/([^/]+)/([^/?#]+)\.html$", re.IGNORECASE)
+_NIGHTS_RE = re.compile(r"\b[0-9]+\s+nights?\b", re.IGNORECASE)
+_PER_NIGHT_RE = re.compile(r"\bper\s+night\b|/\s*night\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -165,6 +167,17 @@ def parse_distance(value: str) -> float | None:
         return None
 
 
+def parse_price_basis(value: str) -> AccommodationPriceBasis:
+    """Infer a basis only from explicit visible Booking wording."""
+
+    text = _clean_text(value)
+    if _PER_NIGHT_RE.search(text):
+        return AccommodationPriceBasis.PER_NIGHT
+    if _NIGHTS_RE.search(text):
+        return AccommodationPriceBasis.TOTAL_STAY
+    return AccommodationPriceBasis.UNKNOWN
+
+
 def normalize_property_url(href: str, *, request_url: str) -> str | None:
     """Keep only a validated Booking property URL and booking parameters."""
 
@@ -271,6 +284,9 @@ def parse_booking_search_html(
         )
         distance_km = parse_distance(distance_text or "")
 
+        duration_text = _first_text(card, '[data-testid="price-for-x-nights"]')
+        price_basis = parse_price_basis(duration_text)
+
         price_text = _first_text(card, '[data-testid="price-and-discounted-price"]')
         tax_text = _first_text(card, '[data-testid="taxes-and-charges"]')
         if not price_text:
@@ -333,6 +349,11 @@ def parse_booking_search_html(
             base_price_krw=price.base_price_krw,
             taxes_krw=price.taxes_krw,
             final_price_krw=price.final_price_krw,
+            price_basis=price_basis,
+            # A card without a numeric final price is still a valid raw place
+            # and offer record.  Keep its price evidence unknown instead of
+            # claiming a fresh price and making model validation discard it.
+            price_freshness="fresh" if price.final_price_krw is not None else "unknown",
             availability=availability,
             fetched_at=observed_at,
         )

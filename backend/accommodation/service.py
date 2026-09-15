@@ -17,15 +17,16 @@ from backend.accommodation.models import (
     AccommodationSearchResponse,
     AccommodationSourceIssue,
 )
+from config import ACCOMMODATION_API_URL
 from crawler.accommodation.base import AccommodationSource
 from crawler.accommodation.booking import BookingComSource
 from crawler.accommodation.cache import AccommodationCache, AccommodationCacheError
 from crawler.accommodation.errors import AccommodationSourceError
 
-
 LOGGER = logging.getLogger(__name__)
 
-ACCOMMODATION_API_URL = "/api/accommodations/search"
+__all__ = ["ACCOMMODATION_API_URL", "AccommodationService"]
+
 ACCOMMODATION_PLACE_TTL_S = float(
     os.getenv("KTO_ACCOMMODATION_PLACE_CACHE_TTL_S", str(3 * 24 * 60 * 60))
 )
@@ -62,6 +63,14 @@ def _results_have_complete_prices(results: list[AccommodationResult]) -> bool:
         offer.final_price_krw is not None or offer.availability is False
         for result in results
         for offer in result.offers
+    )
+
+
+def _price_unavailable_issue(source: str) -> AccommodationSourceIssue:
+    return AccommodationSourceIssue(
+        source=source,
+        code="ACCOMMODATION_PRICE_UNAVAILABLE",
+        message=_ERROR_MESSAGES["ACCOMMODATION_PRICE_UNAVAILABLE"],
     )
 
 
@@ -139,6 +148,10 @@ class AccommodationService:
                 cache_hits += 1
                 all_results.extend(cached.results)
                 all_sources_complete = all_sources_complete and cached.complete
+                if not cached.complete:
+                    # Partial offer caches intentionally retain unknown prices,
+                    # but the reason must remain visible after a cache hit.
+                    issues.append(_price_unavailable_issue(source_name))
                 continue
 
             all_sources_cached = False
@@ -158,6 +171,8 @@ class AccommodationService:
                 source_complete = _results_have_complete_prices(results)
                 all_results.extend(results)
                 all_sources_complete = all_sources_complete and source_complete
+                if not source_complete:
+                    issues.append(_price_unavailable_issue(source_name))
                 try:
                     self.cache.put(
                         source_name,
@@ -167,7 +182,7 @@ class AccommodationService:
                     )
                 except AccommodationCacheError as error:
                     LOGGER.warning("Accommodation cache write failed: %s", error)
-            except asyncio.TimeoutError as error:
+            except asyncio.TimeoutError:
                 all_sources_complete = False
                 issues.append(
                     AccommodationSourceIssue(
@@ -198,7 +213,7 @@ class AccommodationService:
                     )
                 )
                 LOGGER.warning("Accommodation source result validation failed: %s", error)
-            except Exception as error:
+            except Exception:
                 all_sources_complete = False
                 issues.append(
                     AccommodationSourceIssue(
@@ -214,6 +229,8 @@ class AccommodationService:
             source_status = "partial" if all_results else "unavailable"
         elif not complete:
             source_status = "partial"
+        elif not all_results:
+            source_status = "empty"
         elif all_sources_cached:
             source_status = "cache"
         else:

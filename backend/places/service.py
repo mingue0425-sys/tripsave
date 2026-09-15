@@ -58,6 +58,24 @@ class PlaceService:
         async with self._search_lock:
             return await self._search_locked(request)
 
+    async def close(self) -> None:
+        """Close source-owned clients without making shutdown fragile.
+
+        Sources are intentionally duck-typed so a test double or a future
+        adapter can own either a synchronous or asynchronous close method.
+        """
+
+        for source in self.sources:
+            close = getattr(source, "close", None)
+            if close is None:
+                continue
+            try:
+                result = close()
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception:
+                LOGGER.debug("Could not close place source", exc_info=True)
+
     async def _search_locked(self, request: PlaceSearchRequest) -> PlaceSearchResponse:
         fetched_at = self.clock()
         if fetched_at.tzinfo is None:

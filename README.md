@@ -534,3 +534,100 @@ OpenFreeMap's configured basemap host, the fixed Korea Expressway toll page,
 and the two fixed Opinet public HTML pages. No Google, Kakao, Naver, Mapbox,
 public OSRM, commercial fuel API, Opinet OpenAPI, analytics, telemetry, proxy
 rotation, or CAPTCHA/access-control bypass is used.
+
+## V0.8 Entity Resolution
+
+V0.8 keeps V0.6/V0.7 source records intact and adds a derived canonical layer.
+The legacy destination index is implemented by `backend/city_search.py`; the
+`backend.places` package only re-exports that API for compatibility with older
+callers.
+
+The development endpoint is:
+
+```text
+POST /api/entities/resolve
+GET  /api/places/canonical
+GET  /api/entities/debug/{canonical_id}  # debug mode only
+```
+
+`POST /api/entities/resolve` accepts validated `PlaceSourceRecord`-shaped
+records (including V0.7 raw fields) and separate `AccommodationOffer` rows.
+Offers are linked to a canonical accommodation only by source and native place
+identity; offers are never merged into `Place.price`.
+
+The resolver uses category/region/name/spatial blocking, hard category/region/
+distance/branch constraints, and the three decisions `MATCH`, `AMBIGUOUS`, and
+`NO_MATCH`. A fuzzy name by itself is never a merge. Clusters are checked
+pairwise, so a transitive A→B→C chain cannot force an inconsistent A/C merge.
+
+Ratings are normalized to `0..1`; null ratings and review counts remain null.
+The Bayesian prior is the current input batch's category median and `m` is its
+75th-percentile observed review count. Cross-source review counts are exposed
+as `observed_review_count_sum`, explicitly not as a unique-review count.
+
+Canonical rows, memberships, candidate decisions, overrides, and linked offers
+are stored in `data/entity_resolution.sqlite3`. This is a separate derived
+database; the accommodation, places, toll, and fuel raw/cache databases are not
+migrated or deleted. The matcher version and all source memberships make a
+resolution explainable and rebuildable.
+
+## V0.9 Trip Candidates and Cost Completeness
+
+V0.9 assembles `TripCandidate` records from the existing route, driving-cost,
+canonical-place, and accommodation-offer contracts. The endpoint is:
+
+```text
+POST /api/trips/candidates
+```
+
+The request may include prefetched dependencies for deterministic tests and
+offline operation. Without them, the endpoint reuses the existing route,
+driving-cost, accommodation, places, cache, and entity-resolution services;
+source failures stay attached to their own component.
+
+Accommodation prices are calculated only when the offer declares
+`TOTAL_STAY` or `PER_NIGHT`, with `final_price_krw` taking precedence over a
+fully known base-plus-tax breakdown. An unknown basis, missing tax, expired
+offer, unavailable source, or missing route never becomes zero. Every required
+component is marked `VERIFIED`, `ESTIMATED`, or `UNKNOWN`; a complete verified
+total is exposed as `total_krw`, while a partial candidate exposes only its
+`known_subtotal_krw` and `missing_components`.
+
+The current required overnight total is driving plus accommodation. A day trip
+has no required accommodation component. Restaurant and attraction counts,
+rating means, coordinate coverage, and rating confidence are descriptive
+`TripQualityFeatures` only; V0.9 does not rank candidates or create a final
+recommendation score. Candidate IDs and ordering are deterministic and each
+accommodation offer remains a separate candidate input.
+
+The browser’s `여행 후보` panel uses DOM APIs and displays verified totals,
+estimated totals, and incomplete totals with separate wording. Nullable rating,
+price, and review fields remain unknown in the UI as well.
+
+## V1.0 Explainable Recommendations
+
+V1.0 ranks already assembled `TripCandidate` records through:
+
+```text
+POST /api/recommendations/rank
+```
+
+The ranker supports `balanced`, `lowest_cost`, `value`,
+`accommodation_quality`, `sightseeing`, and `low_driving` modes, plus validated
+custom weights for cost, accommodation, restaurants, attractions, and driving.
+Weights are normalized only after unavailable features are removed. A missing
+feature remains `null`; it is never silently converted to a zero-quality score.
+
+Total-cost ranking uses `total_krw` only. Partial `known_subtotal_krw` candidates
+cannot appear as cheap complete trips, while estimated-complete candidates are
+allowed with a lower confidence value and an explicit warning. Rating features
+use the V0.8 normalized rating and confidence, place counts use diminishing
+returns, and driving score uses distance/duration rather than adding driving
+cost a second time.
+
+Every recommendation includes normalized feature scores, confidence,
+strengths, weaknesses, warnings, and weighted contribution traces. Ranking is
+deterministic, uses stable tie-breaks, and performs no crawler, OSRM, or toll
+request. The browser recommendation panel supports preset modes and accessible
+custom-weight sliders; changing any candidate dependency invalidates the old
+ranking.

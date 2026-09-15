@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS accommodation_offers (
     base_price_krw INTEGER,
     taxes_krw INTEGER,
     final_price_krw INTEGER,
+    price_basis TEXT NOT NULL DEFAULT 'UNKNOWN',
+    price_freshness TEXT NOT NULL DEFAULT 'unknown',
     availability INTEGER,
     distance_km REAL,
     distance_text TEXT,
@@ -179,11 +181,30 @@ class AccommodationCache:
             connection = sqlite3.connect(str(self.database_path))
             connection.row_factory = sqlite3.Row
             connection.executescript(SCHEMA_SQL)
+            self._migrate_offer_columns(connection)
             return connection
         except (OSError, sqlite3.Error) as error:
             raise AccommodationCacheError(
                 "The local accommodation cache database is unavailable."
             ) from error
+
+    @staticmethod
+    def _migrate_offer_columns(connection: sqlite3.Connection) -> None:
+        """Add V0.9 offer metadata without deleting existing cache rows."""
+
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(accommodation_offers)").fetchall()
+        }
+        if "price_basis" not in columns:
+            connection.execute(
+                "ALTER TABLE accommodation_offers ADD COLUMN price_basis TEXT NOT NULL DEFAULT 'UNKNOWN'"
+            )
+        if "price_freshness" not in columns:
+            connection.execute(
+                "ALTER TABLE accommodation_offers ADD COLUMN price_freshness TEXT NOT NULL DEFAULT 'unknown'"
+            )
+        connection.commit()
 
     def get(
         self,
@@ -219,6 +240,7 @@ class AccommodationCache:
                     o.place_source_id, o.checkin, o.checkout,
                     o.adults, o.children, o.room_name,
                     o.base_price_krw, o.taxes_krw, o.final_price_krw,
+                    o.price_basis, o.price_freshness,
                     o.availability, o.distance_km, o.distance_text,
                     o.fetched_at AS offer_fetched_at, o.expires_at AS offer_expires_at,
                     o.parser_version AS offer_parser_version,
@@ -279,6 +301,14 @@ class AccommodationCache:
                     base_price_krw=row["base_price_krw"],
                     taxes_krw=row["taxes_krw"],
                     final_price_krw=row["final_price_krw"],
+                    price_basis=row["price_basis"],
+                    price_freshness=(
+                        "expired"
+                        if row["offer_expires_at"]
+                        and _parse_datetime(row["offer_expires_at"]) <= datetime.now(timezone.utc)
+                        else row["price_freshness"]
+                    ),
+                    expires_at=_parse_datetime(row["offer_expires_at"]),
                     availability=(
                         None
                         if row["availability"] is None
@@ -375,9 +405,10 @@ class AccommodationCache:
                             source, source_offer_id, place_key, place_source_id,
                             checkin, checkout, adults, children, room_name,
                             base_price_krw, taxes_krw, final_price_krw, availability,
+                            price_basis, price_freshness,
                             distance_km, distance_text, fetched_at, expires_at,
                             parser_version
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             offer_key,
@@ -396,6 +427,8 @@ class AccommodationCache:
                             offer.taxes_krw,
                             offer.final_price_krw,
                             None if offer.availability is None else int(offer.availability),
+                            offer.price_basis.value,
+                            offer.price_freshness,
                             result.distance_km,
                             result.distance_text,
                             _utc_datetime(offer.fetched_at).isoformat(),

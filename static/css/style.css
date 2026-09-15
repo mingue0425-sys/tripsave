@@ -857,6 +857,18 @@ h1 {
   line-height: 0.5;
 }
 
+.legend-marker--accommodation {
+  background: #8a5a1f;
+}
+
+.legend-marker--restaurant {
+  background: #2563eb;
+}
+
+.legend-marker--attraction {
+  background: #7c3aed;
+}
+
 .coordinate-bar {
   align-items: center;
   background: var(--surface);

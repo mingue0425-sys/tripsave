@@ -2,11 +2,13 @@ from datetime import date, datetime, timezone
 
 import pytest
 
+from backend.accommodation.models import AccommodationPriceBasis
 from crawler.accommodation.errors import AccommodationPageChangedError
 from crawler.accommodation.parser import (
     parse_booking_search_html,
     parse_distance,
     parse_krw_amounts,
+    parse_price_basis,
     parse_price_components,
     parse_rating_and_reviews,
 )
@@ -50,6 +52,19 @@ def test_rating_review_and_distance_parsers_preserve_scale() -> None:
     assert parse_distance("Show on map") is None
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1 night, 2 adults", AccommodationPriceBasis.TOTAL_STAY),
+        ("2 nights, 2 adults", AccommodationPriceBasis.TOTAL_STAY),
+        ("KRW 120,000 per night", AccommodationPriceBasis.PER_NIGHT),
+        ("price available", AccommodationPriceBasis.UNKNOWN),
+    ],
+)
+def test_price_basis_requires_explicit_visible_wording(value: str, expected) -> None:
+    assert parse_price_basis(value) is expected
+
+
 def test_booking_parser_creates_separate_place_and_offer_records() -> None:
     fetched_at = datetime(2026, 9, 12, tzinfo=timezone.utc)
     results = parse_booking_search_html(
@@ -73,9 +88,38 @@ def test_booking_parser_creates_separate_place_and_offer_records() -> None:
     assert results[0].offers[0].room_name == "Deluxe Room"
     assert results[0].offers[0].final_price_krw == 100_000
     assert results[0].offers[0].base_price_krw is None
+    assert results[0].offers[0].price_basis is AccommodationPriceBasis.TOTAL_STAY
     assert results[1].offers[0].taxes_krw == 20_000
     assert results[1].offers[0].final_price_krw == 220_000
     assert results[0].offers[0].checkin == date(2026, 10, 1)
+
+
+def test_booking_parser_preserves_offer_when_price_is_unknown() -> None:
+    html = """
+    <div data-testid="property-card">
+      <a data-testid="title-link" href="https://www.booking.com/hotel/kr/no-price.html">
+        <div data-testid="title">No Price Hotel</div>
+      </a>
+      <span data-testid="address-link">Busan</span>
+      <div data-testid="price-for-x-nights">2 nights, 2 adults</div>
+      <div data-testid="availability-rate-information">Price available after selection</div>
+    </div>
+    """
+
+    results = parse_booking_search_html(
+        html,
+        source_url="https://www.booking.com/searchresults.html?ss=Busan",
+        checkin=date(2026, 10, 1),
+        checkout=date(2026, 10, 3),
+        adults=2,
+        children=0,
+        fetched_at=datetime(2026, 9, 12, tzinfo=timezone.utc),
+    )
+
+    offer = results[0].offers[0]
+    assert offer.final_price_krw is None
+    assert offer.price_freshness == "unknown"
+    assert offer.availability is None
 
 
 def test_booking_parser_marks_changed_page_explicitly() -> None:

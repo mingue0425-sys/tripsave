@@ -124,8 +124,10 @@ def test_timeout_and_http_errors_are_typed() -> None:
     error_source = VisitKoreaSource(
         client_factory=lambda: ErrorClient(), request_interval_seconds=0
     )
-    with pytest.raises(SourceHTTPError):
+    with pytest.raises(SourceHTTPError) as error_info:
         run(error_source.search(PlaceDestination(37.5, 127.0, "Seoul"), "restaurant", 10))
+    assert error_info.value.code == "ACCESS_DENIED"
+    assert error_info.value.retriable is False
 
 
 def test_page_changed_error_is_not_reported_as_empty() -> None:

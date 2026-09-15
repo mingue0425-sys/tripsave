@@ -30,6 +30,7 @@ REQUIRED_LOCAL_ASSETS = (
     PROJECT_ROOT / "static" / "js" / "markers.js",
     PROJECT_ROOT / "static" / "js" / "selection.js",
     PROJECT_ROOT / "static" / "js" / "search.js",
+    PROJECT_ROOT / "static" / "js" / "place_layers.js",
     PROJECT_ROOT / "static" / "js" / "route_format.js",
     PROJECT_ROOT / "static" / "js" / "route_layer.js",
     PROJECT_ROOT / "static" / "js" / "route.js",

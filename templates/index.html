@@ -10,12 +10,14 @@
     <link rel="stylesheet" href="/static/css/style.css">
     <link rel="stylesheet" href="/static/css/accommodation.css">
     <link rel="stylesheet" href="/static/css/places.css">
+    <link rel="stylesheet" href="/static/css/trips.css">
+    <link rel="stylesheet" href="/static/css/recommendations.css">
   </head>
   <body data-map-available="true">
     <div class="app-shell">
       <header class="app-header">
         <div>
-            <p class="eyebrow">V0.5 · DRIVING COST ENGINE</p>
+            <p class="eyebrow">V1.0 · EXPLAINABLE RECOMMENDATIONS</p>
           <h1>Korea Trip Optimizer</h1>
         </div>
         <span class="version-badge">{{ app_version }}</span>
@@ -95,6 +97,8 @@
 
           {% include "components/accommodation.html" %}
           {% include "components/places.html" %}
+          {% include "components/trips.html" %}
+          {% include "components/recommendations.html" %}
 
           <div class="panel-actions">
             <button id="swap-button" class="button button--secondary" type="button" disabled>
@@ -320,6 +324,9 @@
             <span><i class="legend-marker legend-marker--destination">B</i>목적지</span>
             <span><i class="legend-line">━</i>자동차 경로</span>
             <span><i class="legend-toll">TG</i>톨게이트 후보</span>
+            <span><i class="legend-marker legend-marker--accommodation">H</i>숙소</span>
+            <span><i class="legend-marker legend-marker--restaurant">R</i>맛집</span>
+            <span><i class="legend-marker legend-marker--attraction">A</i>관광지</span>
           </div>
         </section>
       </main>
@@ -340,6 +347,7 @@
     <script src="/static/js/markers.js" defer></script>
     <script src="/static/js/selection.js" defer></script>
     <script src="/static/js/search.js" defer></script>
+    <script src="/static/js/place_layers.js" defer></script>
     <script src="/static/js/route_format.js" defer></script>
     <script src="/static/js/route_layer.js" defer></script>
     <script src="/static/js/route.js" defer></script>
@@ -348,5 +356,7 @@
     <script src="/static/js/cost.js" defer></script>
     <script src="/static/js/accommodation.js" defer></script>
     <script src="/static/js/places.js" defer></script>
+    <script src="/static/js/trips.js" defer></script>
+    <script src="/static/js/recommendations.js" defer></script>
   </body>
 </html>

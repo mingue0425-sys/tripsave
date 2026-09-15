@@ -1,0 +1,59 @@
+"""V1.0 preference-aware recommendation and explainability layer."""
+
+from backend.recommendations.models import (
+    FEATURE_NAMES,
+    RANKING_VERSION,
+    ExcludedCandidate,
+    RankingResult,
+    Recommendation,
+    RecommendationFeatureScores,
+    RecommendationMode,
+    RecommendationRankRequest,
+    RecommendationResponse,
+    RecommendationWeights,
+)
+from backend.recommendations.normalization import (
+    RobustBounds,
+    normalize_higher_is_better,
+    normalize_lower_is_better,
+    normalize_unit,
+    percentile,
+    renormalize_weights,
+    robust_bounds,
+    saturating_count_score,
+    weighted_sum,
+)
+from backend.recommendations.service import (
+    DEFAULT_MODE_WEIGHTS,
+    MODE_LABELS,
+    MODE_REQUIRED_FEATURES,
+    RecommendationError,
+    RecommendationService,
+)
+
+__all__ = [
+    "DEFAULT_MODE_WEIGHTS",
+    "FEATURE_NAMES",
+    "MODE_LABELS",
+    "MODE_REQUIRED_FEATURES",
+    "RANKING_VERSION",
+    "ExcludedCandidate",
+    "RankingResult",
+    "Recommendation",
+    "RecommendationError",
+    "RecommendationFeatureScores",
+    "RecommendationMode",
+    "RecommendationRankRequest",
+    "RecommendationResponse",
+    "RecommendationService",
+    "RecommendationWeights",
+    "RobustBounds",
+    "normalize_higher_is_better",
+    "normalize_lower_is_better",
+    "normalize_unit",
+    "percentile",
+    "renormalize_weights",
+    "robust_bounds",
+    "saturating_count_score",
+    "weighted_sum",
+]

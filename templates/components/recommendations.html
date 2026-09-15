@@ -1,0 +1,59 @@
+<section class="recommendations-panel" id="recommendations-panel" aria-labelledby="recommendations-panel-title">
+  <div class="recommendations-heading">
+    <div>
+      <p class="location-kicker">EXPLAINABLE RECOMMENDATIONS</p>
+      <h2 id="recommendations-panel-title">추천 순위</h2>
+    </div>
+    <span id="recommendations-count" class="recommendations-count" hidden></span>
+  </div>
+  <p id="recommendations-summary" class="recommendations-summary">
+    여행 후보를 조립한 뒤 선호 기준에 따라 비교합니다. 점수와 데이터 신뢰도는 별도로 표시합니다.
+  </p>
+  <div class="recommendations-controls">
+    <label for="recommendation-mode">추천 모드</label>
+    <select id="recommendation-mode">
+      <option value="balanced">균형형</option>
+      <option value="lowest_cost">최저비용</option>
+      <option value="value">가성비</option>
+      <option value="accommodation_quality">숙소품질 우선</option>
+      <option value="sightseeing">관광 우선</option>
+      <option value="low_driving">운전 최소</option>
+    </select>
+  </div>
+  <label class="recommendations-custom-toggle">
+    <input id="recommendations-custom-toggle" type="checkbox">
+    사용자 가중치 사용
+  </label>
+  <fieldset id="recommendations-custom-weights" class="recommendations-custom-weights" hidden>
+    <legend>사용자 가중치</legend>
+    <div class="recommendation-weight-row">
+      <label for="recommendation-weight-cost">비용 <output id="recommendation-weight-cost-value" for="recommendation-weight-cost">30%</output></label>
+      <input id="recommendation-weight-cost" data-recommendation-weight="cost" type="range" min="0" max="100" step="1" value="30">
+    </div>
+    <div class="recommendation-weight-row">
+      <label for="recommendation-weight-accommodation">숙소 <output id="recommendation-weight-accommodation-value" for="recommendation-weight-accommodation">25%</output></label>
+      <input id="recommendation-weight-accommodation" data-recommendation-weight="accommodation" type="range" min="0" max="100" step="1" value="25">
+    </div>
+    <div class="recommendation-weight-row">
+      <label for="recommendation-weight-restaurant">음식점 <output id="recommendation-weight-restaurant-value" for="recommendation-weight-restaurant">10%</output></label>
+      <input id="recommendation-weight-restaurant" data-recommendation-weight="restaurant" type="range" min="0" max="100" step="1" value="10">
+    </div>
+    <div class="recommendation-weight-row">
+      <label for="recommendation-weight-attraction">관광지 <output id="recommendation-weight-attraction-value" for="recommendation-weight-attraction">15%</output></label>
+      <input id="recommendation-weight-attraction" data-recommendation-weight="attraction" type="range" min="0" max="100" step="1" value="15">
+    </div>
+    <div class="recommendation-weight-row">
+      <label for="recommendation-weight-driving">운전 <output id="recommendation-weight-driving-value" for="recommendation-weight-driving">20%</output></label>
+      <input id="recommendation-weight-driving" data-recommendation-weight="driving" type="range" min="0" max="100" step="1" value="20">
+    </div>
+    <p class="input-help">합계는 서버에서 자동으로 100%가 되도록 정규화합니다.</p>
+  </fieldset>
+  <button id="recommendations-rank" class="button button--recommendations" type="button" disabled>
+    추천 순위 생성
+  </button>
+  <p id="recommendations-status" class="recommendations-status" role="status" aria-live="polite">
+    먼저 여행 후보를 조립하세요.
+  </p>
+  <div id="recommendations-results" class="recommendations-results" aria-live="polite"></div>
+  <div id="recommendations-excluded" class="recommendations-excluded" hidden></div>
+</section>

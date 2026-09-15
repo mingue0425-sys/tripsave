@@ -10,8 +10,13 @@ TEMPLATES_DIR = PROJECT_ROOT / "templates"
 STATIC_DIR = PROJECT_ROOT / "static"
 PLACES_DATA_FILE = STATIC_DIR / "data" / "places.json"
 
-APP_VERSION = "0.5.1"
+APP_VERSION = "1.0.0"
 PLACES_SEARCH_URL = "/api/places/search"
+ACCOMMODATION_API_URL = "/api/accommodations/search"
+ENTITY_RESOLVE_API_URL = "/api/entities/resolve"
+CANONICAL_PLACES_API_URL = "/api/places/canonical"
+TRIP_CANDIDATES_API_URL = "/api/trips/candidates"
+RECOMMENDATIONS_API_URL = "/api/recommendations/rank"
 ROUTE_API_URL = "/api/routes"
 ROUTING_STATUS_URL = "/api/routing/status"
 TOLL_STATUS_URL = "/api/tolls/status"
@@ -44,6 +49,14 @@ OSRM_DOCKER_IMAGE = "ghcr.io/project-osrm/osrm-backend:26.7.3-debian"
 # the official Korea Expressway HTML page.  The page URL is a fixed source;
 # clients never supply a crawler URL.
 TOLL_INDEX_DB = PROJECT_ROOT / "data" / "korea_trip.db"
+# Accommodation offer/metadata rows intentionally live in their own SQLite
+# file.  The toll index and fuel cache share a read/write database with a
+# different schema and lifecycle; accommodation searches must never contend
+# with that hot path.
+ACCOMMODATION_CACHE_DB = PROJECT_ROOT / "data" / "accommodation_cache.sqlite3"
+# V0.8 canonical entities are derived data and intentionally use a third DB;
+# neither V0.6 accommodation rows nor V0.7 place rows are migrated or deleted.
+ENTITY_RESOLUTION_DB = PROJECT_ROOT / "data" / "entity_resolution.sqlite3"
 OFFICIAL_TOLL_URL = "https://www.ex.co.kr/portal/usefee/selectUseFeeNList.do"
 OFFICIAL_TOLL_HOSTNAME = "www.ex.co.kr"
 TOLL_CACHE_TTL_DAYS = 30
@@ -192,6 +205,11 @@ def map_config() -> dict[str, object]:
         "defaultBasemap": DEFAULT_BASEMAP_ID,
         "basemaps": basemaps,
         "placesSearchUrl": PLACES_SEARCH_URL,
+        "accommodationApiUrl": ACCOMMODATION_API_URL,
+        "entityResolveApiUrl": ENTITY_RESOLVE_API_URL,
+        "canonicalPlacesApiUrl": CANONICAL_PLACES_API_URL,
+        "tripCandidatesApiUrl": TRIP_CANDIDATES_API_URL,
+        "recommendationsApiUrl": RECOMMENDATIONS_API_URL,
         "routeApiUrl": ROUTE_API_URL,
         "routingStatusUrl": ROUTING_STATUS_URL,
         "tollStatusUrl": TOLL_STATUS_URL,

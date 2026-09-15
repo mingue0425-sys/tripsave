@@ -1,4 +1,9 @@
-"""Local searchable city index built from application-owned place data."""
+"""Local searchable city index.
+
+The V0.1--V0.5 destination picker lives in this module so that it cannot be
+shadowed by the V0.7 ``backend.places`` package.  The package keeps a small
+backward-compatible re-export for callers that still import the old name.
+"""
 
 from __future__ import annotations
 
@@ -10,15 +15,18 @@ from pathlib import Path
 from backend.models import Place
 from config import PLACES_DATA_FILE
 
-
 LOGGER = logging.getLogger(__name__)
 
 
 def normalize_query(value: str) -> str:
+    """Normalize a local destination-search query."""
+
     return unicodedata.normalize("NFKC", value).strip().casefold()
 
 
 def _read_places(places_file: Path = PLACES_DATA_FILE) -> list[dict[str, object]]:
+    """Read the application-owned city index without making it fatal."""
+
     try:
         data = json.loads(places_file.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -71,3 +79,6 @@ def search_places(query: str, limit: int = 8) -> list[Place]:
 
     ranked.sort(key=lambda item: item[0])
     return [place for _, place in ranked[:limit]]
+
+
+__all__ = ["load_places", "normalize_query", "search_places"]

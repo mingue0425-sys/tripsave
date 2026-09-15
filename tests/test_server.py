@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app import app
-
+from config import APP_VERSION
 
 client = TestClient(app)
 
@@ -19,10 +19,18 @@ def test_root_renders_open_basemap_shell() -> None:
     assert "/static/js/toll.js" in response.text
     assert "/static/js/cost.js" in response.text
     assert "/static/js/toll_markers.js" in response.text
+    assert "/static/css/trips.css" in response.text
+    assert "/static/css/recommendations.css" in response.text
+    assert "/static/js/trips.js" in response.text
+    assert "/static/js/recommendations.js" in response.text
+    assert "trip-candidates-panel" in response.text
+    assert "recommendations-panel" in response.text
     assert "/api/routes" in response.text
     assert "/api/tolls/calculate" in response.text
     assert "/api/fuel/calculate" in response.text
     assert "/api/costs/driving" in response.text
+    assert "/api/trips/candidates" in response.text
+    assert "/api/recommendations/rank" in response.text
     assert "/api/places/search" in response.text
     assert "OpenFreeMap" in response.text
 
@@ -31,7 +39,7 @@ def test_health() -> None:
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "version": "0.5.1"}
+    assert response.json() == {"status": "ok", "version": APP_VERSION}
 
 
 def test_retired_preview_map_routes_are_not_served() -> None:
