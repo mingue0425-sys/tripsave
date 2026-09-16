@@ -23,14 +23,26 @@ def test_root_renders_open_basemap_shell() -> None:
     assert "/static/css/recommendations.css" in response.text
     assert "/static/js/trips.js" in response.text
     assert "/static/js/recommendations.js" in response.text
+    assert "/static/css/poi.css" in response.text
+    assert "/static/css/itinerary.css" in response.text
+    assert "/static/css/weather.css" in response.text
+    assert "/static/js/poi.js" in response.text
+    assert "/static/js/itinerary.js" in response.text
+    assert "/static/js/weather.js" in response.text
     assert "trip-candidates-panel" in response.text
     assert "recommendations-panel" in response.text
+    assert "poi-panel" in response.text
+    assert "itinerary-panel" in response.text
+    assert "weather-panel" in response.text
     assert "/api/routes" in response.text
     assert "/api/tolls/calculate" in response.text
     assert "/api/fuel/calculate" in response.text
     assert "/api/costs/driving" in response.text
     assert "/api/trips/candidates" in response.text
     assert "/api/recommendations/rank" in response.text
+    assert "/api/poi/search" in response.text
+    assert "/api/routes/optimize" in response.text
+    assert "/api/weather/forecast" in response.text
     assert "/api/places/search" in response.text
     assert "OpenFreeMap" in response.text
 

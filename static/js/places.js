@@ -233,6 +233,28 @@
       sourceLine.append(separator, link);
     }
     card.appendChild(sourceLine);
+
+    if (validCoordinates(place)) {
+      const waypointButton = document.createElement("button");
+      waypointButton.type = "button";
+      waypointButton.className = "button button--waypoint-add";
+      waypointButton.textContent = "경유지에 추가";
+      waypointButton.addEventListener("click", () => {
+        window.dispatchEvent(
+          new CustomEvent("kto:waypoint-added", {
+            detail: {
+              id: `place:${place.category || "place"}:${place.id || place.source_id || place.name}`,
+              name: typeof place.name === "string" ? place.name : "선택한 장소",
+              lat: place.lat,
+              lng: place.lng,
+              category: place.category || null,
+              visit_duration_min: 60,
+            },
+          })
+        );
+      });
+      card.appendChild(waypointButton);
+    }
     return card;
   }
 

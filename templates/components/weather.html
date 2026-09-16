@@ -1,0 +1,16 @@
+<section class="weather-panel" id="weather-panel" aria-labelledby="weather-panel-title">
+  <div class="weather-panel__heading">
+    <div>
+      <p class="location-kicker">TRIP DATE WEATHER</p>
+      <h2 id="weather-panel-title">여행 날짜별 날씨</h2>
+    </div>
+  </div>
+  <p id="weather-summary" class="weather-summary">목적지와 여행 날짜를 선택하면 예보를 확인합니다.</p>
+  <div class="weather-inputs">
+    <div><label for="weather-start-date">시작일</label><input id="weather-start-date" type="date"></div>
+    <div><label for="weather-end-date">종료일</label><input id="weather-end-date" type="date"></div>
+  </div>
+  <button id="weather-search" class="button button--weather" type="button" disabled>날씨 확인</button>
+  <p id="weather-status" class="weather-status" role="status" aria-live="polite">목적지를 먼저 선택해 주세요.</p>
+  <div id="weather-results" class="weather-results" aria-live="polite"></div>
+</section>

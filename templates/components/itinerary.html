@@ -1,0 +1,31 @@
+<section class="itinerary-panel" id="itinerary-panel" aria-labelledby="itinerary-panel-title">
+  <div class="itinerary-panel__heading">
+    <div>
+      <p class="location-kicker">MULTI-STOP PLAN</p>
+      <h2 id="itinerary-panel-title">경유지 일정</h2>
+    </div>
+  </div>
+  <p id="itinerary-summary" class="itinerary-summary">맛집·관광지 카드에서 경유지를 추가하세요.</p>
+  <div id="itinerary-waypoints" class="itinerary-waypoints" aria-live="polite"></div>
+  <div class="itinerary-controls">
+    <div class="itinerary-control">
+      <label for="itinerary-mode">최적화 기준</label>
+      <select id="itinerary-mode">
+        <option value="fastest">최단 시간</option>
+        <option value="shortest">최단 거리</option>
+        <option value="lowest_cost">최저 비용</option>
+      </select>
+    </div>
+    <div class="itinerary-control">
+      <label for="itinerary-start-datetime">출발 시각</label>
+      <input id="itinerary-start-datetime" type="datetime-local">
+    </div>
+    <div class="itinerary-control">
+      <label for="itinerary-daily-limit">하루 운전 한도(분)</label>
+      <input id="itinerary-daily-limit" type="number" min="1" max="1440" step="1" value="360">
+    </div>
+  </div>
+  <button id="itinerary-optimize" class="button button--itinerary" type="button" disabled>경유지 최적화</button>
+  <p id="itinerary-status" class="itinerary-status" role="status" aria-live="polite">출발지·목적지와 경유지를 준비하세요.</p>
+  <div id="itinerary-result" class="itinerary-result" aria-live="polite"></div>
+</section>

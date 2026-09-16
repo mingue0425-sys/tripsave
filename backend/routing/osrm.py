@@ -21,6 +21,7 @@ from config import (
     OSRM_REQUEST_TIMEOUT_S,
     validate_local_osrm_base_url,
 )
+
 from .errors import (
     InvalidRouteInputError,
     InvalidRouteResponseError,
@@ -169,6 +170,7 @@ class OSRMClient:
             request_timeout_s,
             connect=connect_timeout_s,
         )
+        self.last_table_durations: list[list[float | None]] = []
 
     async def route(self, origin: Location, destination: Location) -> RouteResult:
         url = build_route_url(self.base_url, origin, destination)
@@ -196,6 +198,74 @@ class OSRMClient:
             raise InvalidRouteResponseError() from error
         route = parse_osrm_route_payload(payload, origin, destination)
         return route.model_copy(update={"route_id": make_route_id(origin, destination, route)})
+
+    async def table(self, locations: list[Location]) -> list[list[float | None]]:
+        """Fetch one local OSRM distance/duration matrix.
+
+        The duration matrix is retained alongside the returned distance matrix
+        for the itinerary service.  No public OSRM fallback is permitted.
+        """
+
+        if len(locations) < 2 or len(locations) > 22:
+            raise InvalidRouteInputError("경유지는 출발지·목적지를 포함해 2~22개까지 지원합니다.")
+        coordinates = ";".join(location_to_osrm_coordinate(location) for location in locations)
+        url = f"{self.base_url}/table/v1/{OSRM_PROFILE}/{quote(coordinates, safe=',;.-')}"
+        params = {"annotations": "distance,duration"}
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(url, params=params)
+        except httpx.TimeoutException as error:
+            raise RoutingTimeoutError() from error
+        except httpx.RequestError as error:
+            raise RoutingEngineUnavailableError() from error
+
+        if response.status_code >= 500:
+            raise RoutingEngineUnavailableError(
+                "로컬 경로 엔진이 매트릭스 요청에 서버 오류를 반환했습니다."
+            )
+        try:
+            payload: Any = response.json()
+        except ValueError as error:
+            raise InvalidRouteResponseError("OSRM table 응답이 JSON이 아닙니다.") from error
+        if not isinstance(payload, dict):
+            raise InvalidRouteResponseError("OSRM table 응답이 올바른 객체가 아닙니다.")
+        code = payload.get("code")
+        if code == "NoRoute":
+            raise NoRouteError()
+        if code == "NoSegment":
+            raise NoSegmentError()
+        if code != "Ok":
+            raise InvalidRouteResponseError(f"OSRM table returned unexpected code: {code!r}.")
+
+        distances = payload.get("distances")
+        durations = payload.get("durations")
+        if not isinstance(distances, list) or not isinstance(durations, list):
+            raise InvalidRouteResponseError("OSRM table response has no distance/duration matrices.")
+        if len(distances) != len(locations) or len(durations) != len(locations):
+            raise InvalidRouteResponseError("OSRM table matrix dimensions do not match locations.")
+
+        def parse_matrix(value: object, field_name: str) -> list[list[float | None]]:
+            if not isinstance(value, list) or len(value) != len(locations):
+                raise InvalidRouteResponseError(f"OSRM {field_name} matrix is malformed.")
+            parsed: list[list[float | None]] = []
+            for row in value:
+                if not isinstance(row, list) or len(row) != len(locations):
+                    raise InvalidRouteResponseError(f"OSRM {field_name} matrix row is malformed.")
+                parsed_row: list[float | None] = []
+                for item in row:
+                    if item is None:
+                        parsed_row.append(None)
+                        continue
+                    number = _number(item, field_name)
+                    if number < 0:
+                        raise InvalidRouteResponseError(f"OSRM {field_name} cannot be negative.")
+                    parsed_row.append(number)
+                parsed.append(parsed_row)
+            return parsed
+
+        parsed_distances = parse_matrix(distances, "distance")
+        self.last_table_durations = parse_matrix(durations, "duration")
+        return parsed_distances
 
     async def status(self) -> dict[str, object]:
         """Probe a known local road without exposing the OSRM port to browsers."""

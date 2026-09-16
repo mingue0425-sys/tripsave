@@ -653,3 +653,37 @@ first place is shown as a provisional recommendation in the UI. The browser
 recommendation panel supports preset modes and accessible custom-weight
 sliders; enabling the sliders sends `mode=custom`, and changing any candidate
 dependency invalidates the old ranking.
+
+## V1.1 Planning Expansion
+
+The planning layer adds three independent contracts and does not change the
+V1.0 ranking math:
+
+```text
+POST /api/poi/search
+POST /api/routes/optimize
+POST /api/weather/forecast
+```
+
+POIs are read from the separate `data/poi.sqlite3` local index. The index is
+explicitly built from an existing local OSM PBF with
+`python scripts/build_poi_index.py`; the command never downloads data. A
+missing index is reported as `unavailable`, while a ready index with no match
+is reported as a successful `empty` result. POI categories use the `poi:`
+namespace and have independent map layers, toggles, popups, and zoom-density
+limits.
+
+Multi-stop optimization consumes one local OSRM Table matrix, uses exact
+search through eight waypoints and deterministic nearest-neighbour/2-opt above
+that threshold, and never treats a missing segment or toll/fuel value as zero.
+The selected route includes visit durations, local `Asia/Seoul` ETA values,
+daily driving-limit feasibility, and optional final geometry. `LOWEST_COST`
+requires complete pairwise fuel/toll evidence to expose a numeric total.
+
+Weather uses a provider abstraction and an independent SQLite cache. The
+default provider is the official KMA public-data adapter when
+`KTO_WEATHER_API_KEY` is configured; otherwise requests return explicit
+`unavailable` or `not_available_yet` states. Unknown precipitation, wind, and
+temperature values remain null. Stale cache fallback is labeled as stale and
+the weather panel is context only; it does not alter V1.0 recommendation
+ranking.

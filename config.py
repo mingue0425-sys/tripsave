@@ -4,13 +4,12 @@ import os
 from pathlib import Path
 from urllib.parse import urlsplit
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
 STATIC_DIR = PROJECT_ROOT / "static"
 PLACES_DATA_FILE = STATIC_DIR / "data" / "places.json"
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 PLACES_SEARCH_URL = "/api/places/search"
 ACCOMMODATION_API_URL = "/api/accommodations/search"
 ENTITY_RESOLVE_API_URL = "/api/entities/resolve"
@@ -25,6 +24,10 @@ TOLL_API_URL = "/api/tolls/calculate"
 FUEL_API_URL = "/api/fuel/calculate"
 FUEL_STATUS_URL = "/api/fuel/status"
 DRIVING_COST_API_URL = "/api/costs/driving"
+POI_API_URL = "/api/poi/search"
+ITINERARY_API_URL = "/api/routes/optimize"
+WEATHER_API_URL = "/api/weather/forecast"
+WEATHER_STATUS_URL = "/api/weather/status"
 
 LOCAL_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "::1"})
 OSRM_BASE_URL = os.getenv("KTO_OSRM_BASE_URL", "http://127.0.0.1:5000").rstrip("/")
@@ -65,6 +68,30 @@ ENTITY_RESOLUTION_DB = PROJECT_ROOT / "data" / "entity_resolution.sqlite3"
 CANDIDATE_SET_DB = PROJECT_ROOT / "data" / "trip_candidates.sqlite3"
 CANDIDATE_SET_TTL_S = float(os.getenv("KTO_CANDIDATE_SET_TTL_S", "3600"))
 CANDIDATE_SET_MAX_SETS = int(os.getenv("KTO_CANDIDATE_SET_MAX_SETS", "1000"))
+POI_INDEX_DB = PROJECT_ROOT / "data" / "poi.sqlite3"
+POI_INDEX_SOURCE = "local_osm"
+POI_DEFAULT_DESTINATION_RADIUS_M = float(
+    os.getenv("KTO_POI_DESTINATION_RADIUS_M", "3000")
+)
+POI_DEFAULT_ROUTE_CORRIDOR_M = float(
+    os.getenv("KTO_POI_ROUTE_CORRIDOR_M", "1000")
+)
+POI_DEFAULT_LIMIT_PER_CATEGORY = int(
+    os.getenv("KTO_POI_LIMIT_PER_CATEGORY", "50")
+)
+WEATHER_CACHE_DB = PROJECT_ROOT / "data" / "weather_cache.sqlite3"
+WEATHER_CACHE_TTL_S = float(os.getenv("KTO_WEATHER_CACHE_TTL_S", "10800"))
+WEATHER_STALE_MAX_AGE_S = float(
+    os.getenv("KTO_WEATHER_STALE_MAX_AGE_S", "172800")
+)
+WEATHER_TIMEZONE = os.getenv("KTO_WEATHER_TIMEZONE", "Asia/Seoul")
+# The official KMA public-data endpoint is fixed in code.  A key is optional;
+# without it the application reports weather as unavailable instead of making
+# an unauthorised or synthetic request.
+WEATHER_KMA_API_KEY = os.getenv("KTO_WEATHER_KMA_API_KEY")
+WEATHER_KMA_API_URL = (
+    "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst"
+)
 OFFICIAL_TOLL_URL = "https://www.ex.co.kr/portal/usefee/selectUseFeeNList.do"
 OFFICIAL_TOLL_HOSTNAME = "www.ex.co.kr"
 TOLL_CACHE_TTL_DAYS = 30
@@ -226,6 +253,11 @@ def map_config() -> dict[str, object]:
         "fuelApiUrl": FUEL_API_URL,
         "fuelStatusUrl": FUEL_STATUS_URL,
         "drivingCostApiUrl": DRIVING_COST_API_URL,
+        "poiApiUrl": POI_API_URL,
+        "itineraryApiUrl": ITINERARY_API_URL,
+        "weatherApiUrl": WEATHER_API_URL,
+        "weatherStatusUrl": WEATHER_STATUS_URL,
+        "weatherTimezone": WEATHER_TIMEZONE,
         "selectionStorageKey": "koreaTrip.selection.v1",
         "debug": TOLL_DEBUG_MODE,
     }

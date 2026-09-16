@@ -1,0 +1,41 @@
+.poi-panel {
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid rgba(45, 55, 72, 0.12);
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.poi-panel__heading h2 { margin: 0.2rem 0 0; }
+.poi-summary, .poi-status, .poi-empty, .poi-result__meta {
+  margin: 0.6rem 0;
+  color: #5b6472;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.poi-filters { display: flex; flex-wrap: wrap; gap: 0.55rem; margin: 0.8rem 0; }
+.poi-filter { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.8rem; }
+.button--poi { width: 100%; border-color: #0f766e; background: #0f766e; color: #fff; }
+.button--poi:disabled { border-color: #cbd5e1; background: #cbd5e1; color: #64748b; }
+.poi-status--error { color: #b42318; }
+.poi-status--success { color: #177245; }
+.poi-status--partial { color: #9a6700; }
+.poi-results { display: grid; gap: 0.55rem; margin-top: 0.75rem; }
+.poi-result { padding: 0.65rem 0.75rem; border: 1px solid rgba(45, 55, 72, 0.1); border-radius: 0.7rem; background: #fff; }
+.poi-result__heading { display: flex; justify-content: space-between; gap: 0.6rem; }
+.poi-result__name { margin: 0; font-size: 0.9rem; }
+.poi-result__category { color: #0f766e; font-size: 0.72rem; font-weight: 700; }
+.poi-result__meta { margin: 0.3rem 0 0; }
+.kto-poi-pin {
+  display: flex; align-items: center; justify-content: center; width: 28px; height: 28px;
+  border: 2px solid #fff; border-radius: 50%; box-shadow: 0 2px 5px rgb(23 33 43 / 35%);
+  color: #fff; font-size: 0.6rem; font-weight: 850;
+}
+.kto-poi-pin--hospital { background: #b42318; }
+.kto-poi-pin--emergency { background: #7f1d1d; }
+.kto-poi-pin--convenience_store { background: #2563eb; }
+.kto-poi-pin--port, .kto-poi-pin--passenger_terminal { background: #0369a1; }
+.kto-poi-pin--fuel_station { background: #c2410c; }
+.kto-poi-pin--pharmacy { background: #15803d; }
+.kto-poi-pin--parking { background: #475569; }
+.kto-poi-pin--ev_charger { background: #047857; }

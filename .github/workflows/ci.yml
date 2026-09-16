@@ -33,7 +33,12 @@ jobs:
         run: |
           node --check static/js/recommendations.js
           node --check static/js/trips.js
+          node --check static/js/poi.js
+          node --check static/js/itinerary.js
+          node --check static/js/itinerary_route_layer.js
+          node --check static/js/weather.js
           node --test tests/test_recommendations_ui.js
+          node --test tests/test_planning_ui.js
 
       - name: Check patch whitespace
         run: git diff --check HEAD^ HEAD

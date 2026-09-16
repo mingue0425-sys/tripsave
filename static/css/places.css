@@ -105,6 +105,15 @@
   color: #2563eb;
 }
 
+.button--waypoint-add {
+  width: 100%;
+  margin-top: 0.6rem;
+  border-color: #0f766e;
+  color: #0f766e;
+  background: #fff;
+  font-size: 0.78rem;
+}
+
 .places-status--partial {
   color: #9a6700;
 }

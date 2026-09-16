@@ -1,4 +1,4 @@
-"""FastAPI entry point for Korea Trip Optimizer V1.0.0."""
+"""FastAPI entry point for Korea Trip Optimizer V1.1.0."""
 
 import asyncio
 import logging
@@ -31,6 +31,8 @@ from backend.fuel.service import (
     FuelPriceService,
     make_fuel_response,
 )
+from backend.itinerary import ItineraryService
+from backend.itinerary.router import create_router as create_itinerary_router
 from backend.places.models import (
     PlaceCategory,
     PlaceDestination,
@@ -38,6 +40,8 @@ from backend.places.models import (
     PlaceSearchResponse,
 )
 from backend.places.service import PLACES_API_URL, places_service
+from backend.poi import PoiRepository, PoiService
+from backend.poi.router import create_router as create_poi_router
 from backend.recommendations import (
     RankingResult,
     RecommendationDebugRankRequest,
@@ -71,6 +75,13 @@ from backend.trips.candidate_sets import (
     CandidateSetError,
     CandidateSetStore,
 )
+from backend.weather import (
+    KmaWeatherProvider,
+    UnavailableWeatherProvider,
+    WeatherCache,
+    WeatherService,
+)
+from backend.weather.router import create_router as create_weather_router
 from config import (
     ACCOMMODATION_CACHE_DB,
     APP_VERSION,
@@ -87,6 +98,7 @@ from config import (
     OSRM_BASE_URL,
     OSRM_CONNECT_TIMEOUT_S,
     OSRM_REQUEST_TIMEOUT_S,
+    POI_INDEX_DB,
     RECOMMENDATIONS_API_URL,
     ROUTE_API_URL,
     STATIC_DIR,
@@ -96,6 +108,10 @@ from config import (
     TOLL_INDEX_DB,
     TOLL_STATUS_URL,
     TRIP_CANDIDATES_API_URL,
+    WEATHER_CACHE_DB,
+    WEATHER_CACHE_TTL_S,
+    WEATHER_KMA_API_KEY,
+    WEATHER_STALE_MAX_AGE_S,
     map_config,
 )
 from crawler.accommodation.errors import AccommodationSourceError
@@ -126,6 +142,20 @@ candidate_set_store = CandidateSetStore(
     ttl_s=CANDIDATE_SET_TTL_S,
     max_sets=CANDIDATE_SET_MAX_SETS,
 )
+poi_repository = PoiRepository(POI_INDEX_DB)
+poi_service = PoiService(poi_repository)
+itinerary_service = ItineraryService(routing_client)
+weather_provider = (
+    KmaWeatherProvider(api_key=WEATHER_KMA_API_KEY)
+    if WEATHER_KMA_API_KEY
+    else UnavailableWeatherProvider()
+)
+weather_cache = WeatherCache(
+    WEATHER_CACHE_DB,
+    ttl_s=WEATHER_CACHE_TTL_S,
+    stale_max_age_s=WEATHER_STALE_MAX_AGE_S,
+)
+weather_service = WeatherService(weather_provider, weather_cache)
 
 
 @asynccontextmanager
@@ -146,9 +176,14 @@ async def lifespan(_app: FastAPI):
         await toll_calculator.close()
         candidate_set_store.close()
         entity_repository.close()
+        poi_service.close()
+        weather_cache.close()
 
 
 app = FastAPI(title="Korea Trip Optimizer", version=APP_VERSION, lifespan=lifespan)
+app.include_router(create_poi_router(poi_service))
+app.include_router(create_itinerary_router(itinerary_service))
+app.include_router(create_weather_router(weather_service))
 
 # StaticFiles performs safe path handling. Basemap tiles are intentionally
 # fetched from the configured OpenFreeMap provider during development; this
@@ -170,6 +205,17 @@ async def request_validation_handler(
                 "error": {
                     "code": "INVALID_REQUEST",
                     "message": "출발지와 목적지 좌표가 유효하지 않습니다.",
+                },
+            },
+        )
+    if request.url.path in {"/api/routes/optimize", "/api/poi/search", "/api/weather/forecast"}:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "status": "error",
+                "error": {
+                    "code": "INVALID_REQUEST",
+                    "message": "여행 플래닝 요청이 올바르지 않습니다.",
                 },
             },
         )

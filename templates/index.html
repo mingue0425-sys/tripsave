@@ -12,12 +12,15 @@
     <link rel="stylesheet" href="/static/css/places.css">
     <link rel="stylesheet" href="/static/css/trips.css">
     <link rel="stylesheet" href="/static/css/recommendations.css">
+    <link rel="stylesheet" href="/static/css/poi.css">
+    <link rel="stylesheet" href="/static/css/itinerary.css">
+    <link rel="stylesheet" href="/static/css/weather.css">
   </head>
   <body data-map-available="true">
     <div class="app-shell">
       <header class="app-header">
         <div>
-            <p class="eyebrow">V1.0 · EXPLAINABLE RECOMMENDATIONS</p>
+            <p class="eyebrow">V1.1 · MAP POI · MULTI-STOP · WEATHER</p>
           <h1>Korea Trip Optimizer</h1>
         </div>
         <span class="version-badge">{{ app_version }}</span>
@@ -99,6 +102,9 @@
           {% include "components/places.html" %}
           {% include "components/trips.html" %}
           {% include "components/recommendations.html" %}
+          {% include "components/poi.html" %}
+          {% include "components/itinerary.html" %}
+          {% include "components/weather.html" %}
 
           <div class="panel-actions">
             <button id="swap-button" class="button button--secondary" type="button" disabled>
@@ -358,5 +364,9 @@
     <script src="/static/js/places.js" defer></script>
     <script src="/static/js/trips.js" defer></script>
     <script src="/static/js/recommendations.js" defer></script>
+    <script src="/static/js/poi.js" defer></script>
+    <script src="/static/js/itinerary_route_layer.js" defer></script>
+    <script src="/static/js/itinerary.js" defer></script>
+    <script src="/static/js/weather.js" defer></script>
   </body>
 </html>
