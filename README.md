@@ -51,11 +51,13 @@ python3 scripts/quickstart.py
 
 The command reuses or creates `.venv`, installs dependencies only when runtime
 imports are missing, checks/installs Playwright Chromium, initializes the
-weather SQLite cache, verifies `/health`, and starts TripSave on
-`http://127.0.0.1:8765`. It does not download or preprocess the large South
-Korea OSRM dataset. Use `--check` to prepare without starting the server,
-`--no-browser` for an HTTP-only weather run, or the existing
-`scripts/setup_routing.py` flow when local routing data is required.
+weather SQLite cache, downloads/verifies and preprocesses the South Korea OSRM
+PBF when the local graph is missing, starts local OSRM on `127.0.0.1:5000`,
+verifies `/health`, and starts TripSave on `http://127.0.0.1:8765`. Existing
+PBF/MLD files are reused, so repeated starts do not repeat the expensive work.
+Use `--check` to prepare without starting TripSave, `--skip-routing` for an
+HTTP-only weather run, `--routing-engine docker` to force Docker, or
+`--force-download` to intentionally replace and rebuild the PBF graph.
 
 Windows PowerShell:
 

@@ -5,9 +5,9 @@ project virtual environment, installs only when runtime imports are missing,
 checks the Playwright browser, initializes the weather cache, verifies the
 FastAPI health endpoint, and then starts Uvicorn.
 
-South Korea OSRM data is intentionally not downloaded or preprocessed here.
-That dataset is large and remains an explicit opt-in operation through
-``scripts/setup_routing.py``.
+South Korea OSRM data is prepared automatically when it is missing. Existing
+PBF/MLD files are reused without repeating the expensive work. The routing
+service is started as a managed child process before Uvicorn.
 """
 
 from __future__ import annotations
@@ -16,8 +16,10 @@ import argparse
 import asyncio
 import importlib.util
 import os
+import signal
 import subprocess
 import sys
+import time
 import venv
 from pathlib import Path
 
@@ -34,8 +36,6 @@ REQUIRED_IMPORTS = {
     "bs4": "beautifulsoup4",
     "playwright": "playwright",
     "pytest": "pytest",
-    "osmium": "osmium",
-    "osrm": "osrm-bindings",
 }
 
 
@@ -168,7 +168,83 @@ def initialize_weather_cache() -> Path:
     return WEATHER_CACHE_DB
 
 
-def verify_fastapi() -> None:
+def routing_module():
+    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+    import setup_routing
+
+    return setup_routing
+
+
+def prepare_routing(*, engine: str, force_download: bool):
+    routing = routing_module()
+    try:
+        selected_engine, tools = routing.select_engine(engine)
+        data_ready = routing.routing_data_ready()
+        if force_download or not data_ready:
+            print(f"[setup] preparing local OSRM with {selected_engine} engine")
+            routing.download_pbf(force=force_download)
+            routing.preprocess(selected_engine, tools)
+        else:
+            print("[pass] local OSRM PBF/MLD data already ready")
+        return routing, selected_engine
+    except routing.SetupError as error:
+        raise QuickstartError(str(error)) from error
+
+
+def start_routing_service(routing, *, engine: str) -> subprocess.Popen[bytes] | None:
+    if routing.local_osrm_ready():
+        print("[pass] local OSRM service already ready on 127.0.0.1:5000")
+        return None
+
+    command = [
+        sys.executable,
+        str(PROJECT_ROOT / "scripts" / "setup_routing.py"),
+        "--start",
+        "--engine",
+        engine,
+    ]
+    print("[run] " + " ".join(command))
+    popen_kwargs: dict[str, object] = {
+        "cwd": PROJECT_ROOT,
+        "env": os.environ.copy(),
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    process = subprocess.Popen(command, **popen_kwargs)
+    deadline = time.monotonic() + 45
+    while time.monotonic() < deadline:
+        if routing.local_osrm_ready():
+            print("[pass] local OSRM service ready on 127.0.0.1:5000")
+            return process
+        if process.poll() is not None:
+            raise QuickstartError(
+                f"local OSRM startup failed with exit code {process.returncode}"
+            )
+        time.sleep(0.5)
+
+    stop_routing_service(process)
+    raise QuickstartError("local OSRM did not become ready within 45 seconds")
+
+
+def stop_routing_service(process: subprocess.Popen[bytes] | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    try:
+        if os.name == "nt" and hasattr(signal, "CTRL_BREAK_EVENT"):
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            process.send_signal(signal.SIGINT)
+        process.wait(timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+
+def verify_fastapi(*, expect_routing: bool) -> None:
     os.environ.setdefault("KTO_TOLL_BROWSER_WARMUP", "0")
     sys.path.insert(0, str(PROJECT_ROOT))
     from fastapi.testclient import TestClient
@@ -180,6 +256,13 @@ def verify_fastapi() -> None:
     if response.status_code != 200 or response.json().get("status") != "ok":
         raise QuickstartError(f"FastAPI health check failed: {response.status_code}")
     print(f"[pass] FastAPI health: {response.json()}")
+    if expect_routing:
+        routing_response = client.get("/api/routing/status")
+        if routing_response.status_code != 200:
+            raise QuickstartError(
+                f"local OSRM health check failed: {routing_response.status_code}"
+            )
+        print(f"[pass] local OSRM API: {routing_response.json()}")
 
 
 def run_server(*, host: str, port: int, reload: bool) -> int:
@@ -206,6 +289,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--check", action="store_true", help="prepare and verify only; do not start Uvicorn")
     parser.add_argument("--no-install", action="store_true", help="fail instead of installing missing packages/browser")
     parser.add_argument("--no-browser", action="store_true", help="skip the Chromium check and disable browser fallback")
+    parser.add_argument("--skip-routing", action="store_true", help="skip OSRM data/service preparation")
+    parser.add_argument(
+        "--routing-engine",
+        choices=("auto", "native", "docker"),
+        default="auto",
+        help="OSRM runtime to use when preparing missing data (default: auto)",
+    )
+    parser.add_argument(
+        "--force-download",
+        action="store_true",
+        help="replace the existing PBF, verify it, and rebuild the MLD graph",
+    )
     parser.add_argument("--host", default="127.0.0.1", help="Uvicorn bind host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8765, help="Uvicorn port (default: 8765)")
     parser.add_argument("--reload", action="store_true", help="enable Uvicorn auto-reload")
@@ -230,13 +325,25 @@ def main(argv: list[str] | None = None) -> int:
         print("[info] Playwright check skipped; weather browser fallback disabled")
     else:
         ensure_playwright_browser(allow_install=not args.no_install)
-    initialize_weather_cache()
-    verify_fastapi()
+    routing_process = None
+    try:
+        if args.skip_routing:
+            print("[info] OSRM preparation skipped")
+        else:
+            routing, selected_engine = prepare_routing(
+                engine=args.routing_engine,
+                force_download=args.force_download,
+            )
+            routing_process = start_routing_service(routing, engine=selected_engine)
+        initialize_weather_cache()
+        verify_fastapi(expect_routing=not args.skip_routing)
 
-    if args.check:
-        print("[ready] TripSave is prepared. Start with: python scripts/quickstart.py")
-        return 0
-    return run_server(host=args.host, port=args.port, reload=args.reload)
+        if args.check:
+            print("[ready] TripSave is prepared. Start with: python scripts/quickstart.py")
+            return 0
+        return run_server(host=args.host, port=args.port, reload=args.reload)
+    finally:
+        stop_routing_service(routing_process)
 
 
 if __name__ == "__main__":
