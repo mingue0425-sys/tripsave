@@ -55,6 +55,8 @@ def test_all_preset_modes_have_deterministic_normalized_scores() -> None:
     service = RecommendationService()
 
     for mode in RecommendationMode:
+        if mode is RecommendationMode.CUSTOM:
+            continue
         result = service.rank(candidates, mode, now=NOW)
         assert result.ranking_version == "v1.0.0"
         assert result.candidate_count == 3
@@ -240,5 +242,46 @@ def test_invalid_custom_weights_are_rejected() -> None:
         RecommendationService().rank(
             [candidate("a")],
             custom_weights={"unknown": 1},
+            now=NOW,
+        )
+
+
+def test_custom_mode_does_not_require_an_unweighted_preset_feature() -> None:
+    cost_only = candidate("custom-cost-only", price=240_000, rating=None)
+
+    result = RecommendationService().rank(
+        [cost_only],
+        RecommendationMode.CUSTOM,
+        custom_weights={"cost": 1.0, "accommodation": 0.0},
+        now=NOW,
+    )
+
+    assert result.mode is RecommendationMode.CUSTOM
+    assert [item.candidate_id for item in result.recommendations] == [cost_only.id]
+    assert result.excluded_candidates == []
+
+
+def test_custom_mode_excludes_when_all_requested_features_are_unavailable() -> None:
+    restaurant_unavailable = candidate(
+        "custom-restaurant-unavailable",
+        source_statuses={"restaurants": SourceDataStatus.UNAVAILABLE},
+    )
+
+    result = RecommendationService().rank(
+        [restaurant_unavailable],
+        RecommendationMode.CUSTOM,
+        custom_weights={"restaurant": 1.0},
+        now=NOW,
+    )
+
+    assert result.recommendations == []
+    assert result.excluded_candidates[0].reasons == ["NO_AVAILABLE_FEATURES"]
+
+
+def test_custom_mode_requires_explicit_weights() -> None:
+    with pytest.raises(ValueError, match="requires custom weights"):
+        RecommendationService().rank(
+            [candidate("custom-without-weights")],
+            RecommendationMode.CUSTOM,
             now=NOW,
         )

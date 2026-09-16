@@ -93,6 +93,7 @@ MODE_LABELS: dict[RecommendationMode, str] = {
     RecommendationMode.ACCOMMODATION_QUALITY: "숙소품질 우선",
     RecommendationMode.SIGHTSEEING: "관광 우선",
     RecommendationMode.LOW_DRIVING: "운전 최소",
+    RecommendationMode.CUSTOM: "사용자 가중치",
 }
 
 MODE_REQUIRED_FEATURES: dict[RecommendationMode, tuple[str, ...]] = {
@@ -102,6 +103,7 @@ MODE_REQUIRED_FEATURES: dict[RecommendationMode, tuple[str, ...]] = {
     RecommendationMode.ACCOMMODATION_QUALITY: ("accommodation",),
     RecommendationMode.SIGHTSEEING: ("attraction",),
     RecommendationMode.LOW_DRIVING: ("driving",),
+    RecommendationMode.CUSTOM: (),
 }
 
 RESTAURANT_COUNT_SCALE = 10.0
@@ -390,6 +392,8 @@ def _resolved_weights(
     custom_weights: RecommendationWeights | Mapping[str, float] | None,
 ) -> dict[str, float]:
     if custom_weights is None:
+        if mode is RecommendationMode.CUSTOM:
+            raise RecommendationError("custom recommendation mode requires custom weights")
         return dict(DEFAULT_MODE_WEIGHTS[mode])
     try:
         model = (
@@ -545,9 +549,18 @@ class RecommendationService:
         now: datetime | None = None,
     ) -> RankingResult:
         try:
-            mode_value = mode if isinstance(mode, RecommendationMode) else RecommendationMode(mode)
+            requested_mode = mode if isinstance(mode, RecommendationMode) else RecommendationMode(mode)
         except ValueError as error:
             raise RecommendationError(f"unsupported recommendation mode: {mode}") from error
+        # Supplying explicit weights is itself an opt-in to custom semantics.
+        # This keeps service-level callers safe even if they forget to change
+        # a preset selector, while the browser sends the explicit ``custom``
+        # mode for clarity.
+        mode_value = (
+            RecommendationMode.CUSTOM
+            if custom_weights is not None
+            else requested_mode
+        )
         if limit < 1 or limit > 200:
             raise RecommendationError("recommendation limit must be between 1 and 200")
         materialized = [

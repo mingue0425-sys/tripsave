@@ -43,6 +43,29 @@
       : text;
   }
 
+  function formatPlaceCount(candidate, key, value) {
+    const rawStatus = candidate && candidate.component_statuses
+      ? candidate.component_statuses[key]
+      : null;
+    const status = typeof rawStatus === "string" ? rawStatus.toLowerCase() : "unknown";
+    const count = Number.isInteger(value) && value >= 0 ? value : null;
+    if (!["ok", "empty", "partial"].includes(status)) {
+      return "확인 불가";
+    }
+    if (status === "partial") {
+      return count === null ? "확인 불가 · 일부만 확인" : `${count}곳 · 일부만 확인`;
+    }
+    return count === null ? "확인 불가" : `${count}곳`;
+  }
+
+  function formatKnownSubtotal(costs) {
+    const status = costs && typeof costs.status === "string" ? costs.status.toUpperCase() : "UNKNOWN";
+    return ["VERIFIED_COMPLETE", "ESTIMATED_COMPLETE", "PARTIAL"].includes(status)
+      && Number.isFinite(costs.known_subtotal_krw)
+      ? formatWon(costs.known_subtotal_krw)
+      : "확인 불가";
+  }
+
   function selection() {
     const value = window.KoreaTripSelection;
     return value && typeof value.getOrigin === "function"
@@ -205,18 +228,19 @@
     const cost = document.createElement("div");
     cost.className = "trip-candidate-card__cost";
     const costList = document.createElement("dl");
+    const costs = candidate.costs || {};
     const components = [
-      ["자동차 이동비", candidate.costs && candidate.costs.driving_krw],
-      ["숙박비", candidate.costs && candidate.costs.accommodation_krw],
-      ["확인된 비용", candidate.costs && candidate.costs.known_subtotal_krw],
+      ["자동차 이동비", costs.driving_krw, formatWon(costs.driving_krw)],
+      ["숙박비", costs.accommodation_krw, formatWon(costs.accommodation_krw)],
+      ["확인된 비용", costs.known_subtotal_krw, formatKnownSubtotal(costs)],
     ];
-    components.forEach(([label, amount]) => {
+    components.forEach(([label, amount, formattedAmount]) => {
       const term = document.createElement("dt");
       term.textContent = label;
       const value = document.createElement("dd");
       value.textContent = label === "숙박비" && candidate.trip_type === "DAY_TRIP"
         ? "숙박 없음"
-        : formatWon(amount);
+        : formattedAmount;
       costList.append(term, value);
     });
     cost.appendChild(costList);
@@ -227,8 +251,8 @@
     const candidateQuality = candidate.quality || {};
     quality.textContent = [
       formatRating(candidateQuality.accommodation_rating, candidateQuality.accommodation_rating_confidence),
-      `주변 맛집 ${Number(candidateQuality.nearby_restaurant_count) || 0}곳`,
-      `주변 관광지 ${Number(candidateQuality.nearby_attraction_count) || 0}곳`,
+      `주변 맛집 ${formatPlaceCount(candidate, "restaurants", candidateQuality.nearby_restaurant_count)}`,
+      `주변 관광지 ${formatPlaceCount(candidate, "attractions", candidateQuality.nearby_attraction_count)}`,
     ].join(" · ");
     card.appendChild(quality);
 
@@ -237,6 +261,12 @@
       missing.className = "trip-candidate-card__warning";
       missing.textContent = `확인 불가: ${candidate.costs.missing_components.join(", ")}`;
       card.appendChild(missing);
+    }
+    if (costs.status === "ESTIMATED_COMPLETE") {
+      const estimated = document.createElement("p");
+      estimated.className = "trip-candidate-card__warning";
+      estimated.textContent = "비용 일부 추정";
+      card.appendChild(estimated);
     }
     renderSource(card, candidate);
     return card;
@@ -403,6 +433,7 @@
   window.KoreaTripCandidates = Object.freeze({
     generate,
     clear: () => clear("여행 후보를 초기화했습니다."),
+    formatPlaceCount,
     getState: () => ({
       status: state.status,
       response: state.response,

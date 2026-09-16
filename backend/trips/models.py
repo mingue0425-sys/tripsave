@@ -319,7 +319,12 @@ class TripCandidateRequest(BaseModel):
 
 
 class TripCandidateResponse(BaseModel):
-    """Batch response; partial dependencies remain visible to the caller."""
+    """Batch response; partial dependencies remain visible to the caller.
+
+    ``candidate_set_id`` is attached by the API after the assembled batch is
+    persisted.  It remains optional here so service-level assembly tests and
+    existing callers can continue to construct a response before storage.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -329,6 +334,7 @@ class TripCandidateResponse(BaseModel):
     component_statuses: dict[str, SourceDataStatus] = Field(default_factory=dict, max_length=20)
     warnings: list[str] = Field(default_factory=list, max_length=100)
     request_fingerprint: str = Field(min_length=64, max_length=64)
+    candidate_set_id: str | None = Field(default=None, min_length=1, max_length=128)
     created_at: datetime
 
     @model_validator(mode="after")

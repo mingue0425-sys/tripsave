@@ -3,7 +3,6 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from threading import Lock
 
 from fastapi import FastAPI, Query, Request
 from fastapi.exception_handlers import request_validation_exception_handler
@@ -41,6 +40,7 @@ from backend.places.models import (
 from backend.places.service import PLACES_API_URL, places_service
 from backend.recommendations import (
     RankingResult,
+    RecommendationDebugRankRequest,
     RecommendationError,
     RecommendationRankRequest,
     RecommendationService,
@@ -62,15 +62,23 @@ from backend.tolls.service import TollCalculator
 from backend.trips import (
     SourceDataStatus,
     TripAssemblyError,
-    TripCandidate,
     TripCandidateRequest,
     TripCandidateResponse,
     TripCandidateService,
 )
+from backend.trips.candidate_sets import (
+    CandidateSetCapacityError,
+    CandidateSetError,
+    CandidateSetStore,
+)
 from config import (
     ACCOMMODATION_CACHE_DB,
     APP_VERSION,
+    CANDIDATE_SET_DB,
+    CANDIDATE_SET_MAX_SETS,
+    CANDIDATE_SET_TTL_S,
     CANONICAL_PLACES_API_URL,
+    DEBUG_RECOMMENDATIONS_API_URL,
     DRIVING_COST_API_URL,
     ENTITY_RESOLUTION_DB,
     ENTITY_RESOLVE_API_URL,
@@ -113,42 +121,11 @@ entity_repository = EntityResolutionRepository(ENTITY_RESOLUTION_DB)
 entity_resolver = EntityResolver(overrides=entity_repository.load_overrides())
 trip_candidate_service = TripCandidateService()
 recommendation_service = RecommendationService()
-
-# Candidate assembly is intentionally ephemeral in V0.9.  This bounded local
-# registry lets the V1.0 API accept candidate IDs without creating a durable
-# user/session database or losing the full-candidate request path.
-_candidate_registry: dict[str, TripCandidate] = {}
-_candidate_registry_lock = Lock()
-_MAX_CANDIDATE_REGISTRY_SIZE = 1_000
-_candidate_registry_created_at = None
-
-
-def _remember_candidates(response: TripCandidateResponse) -> None:
-    global _candidate_registry_created_at
-    with _candidate_registry_lock:
-        # The registry represents the latest local candidate set.  Replacing
-        # it prevents a destination/date/vehicle change from leaving old IDs
-        # rankable through the candidate-ID API.
-        if (
-            _candidate_registry_created_at is not None
-            and response.created_at < _candidate_registry_created_at
-        ):
-            return
-        _candidate_registry.clear()
-        _candidate_registry_created_at = response.created_at
-        for candidate in response.candidates:
-            _candidate_registry[candidate.id] = candidate
-        while len(_candidate_registry) > _MAX_CANDIDATE_REGISTRY_SIZE:
-            _candidate_registry.pop(next(iter(_candidate_registry)))
-
-
-def _lookup_candidates(candidate_ids: list[str]) -> list[TripCandidate]:
-    with _candidate_registry_lock:
-        return [
-            _candidate_registry[candidate_id]
-            for candidate_id in candidate_ids
-            if candidate_id in _candidate_registry
-        ]
+candidate_set_store = CandidateSetStore(
+    CANDIDATE_SET_DB,
+    ttl_s=CANDIDATE_SET_TTL_S,
+    max_sets=CANDIDATE_SET_MAX_SETS,
+)
 
 
 @asynccontextmanager
@@ -167,6 +144,7 @@ async def lifespan(_app: FastAPI):
         await accommodation_service.close()
         await places_service.close()
         await toll_calculator.close()
+        candidate_set_store.close()
         entity_repository.close()
 
 
@@ -258,6 +236,17 @@ async def request_validation_handler(
                 "error": {
                     "code": "INVALID_REQUEST",
                     "message": "추천 순위 생성 요청이 올바르지 않습니다.",
+                },
+            },
+        )
+    if request.url.path == DEBUG_RECOMMENDATIONS_API_URL and request.method == "POST":
+        return JSONResponse(
+            status_code=422,
+            content={
+                "status": "error",
+                "error": {
+                    "code": "INVALID_REQUEST",
+                    "message": "디버그 추천 순위 생성 요청이 올바르지 않습니다.",
                 },
             },
         )
@@ -552,8 +541,29 @@ async def create_trip_candidates(
             }
         )
         response = await asyncio.to_thread(trip_candidate_service.assemble, assembly_request)
-        _remember_candidates(response)
-        return response
+        try:
+            candidate_set = await asyncio.to_thread(candidate_set_store.save, response)
+        except CandidateSetCapacityError as error:
+            return JSONResponse(
+                status_code=error.http_status,
+                content={
+                    "status": "error",
+                    "error": {"code": error.code, "message": error.message},
+                },
+            )
+        except Exception:
+            LOGGER.exception("Candidate-set persistence failed")
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "error",
+                    "error": {
+                        "code": "CANDIDATE_SET_UNAVAILABLE",
+                        "message": "여행 후보 집합을 저장하지 못했습니다.",
+                    },
+                },
+            )
+        return response.model_copy(update={"candidate_set_id": candidate_set.id})
     except TripAssemblyError as error:
         return JSONResponse(
             status_code=422,
@@ -571,26 +581,58 @@ async def create_trip_candidates(
 async def rank_recommendations(
     request: RecommendationRankRequest,
 ) -> RankingResult | JSONResponse:
-    """Rank supplied/local candidates without fetching or recalculating them."""
+    """Rank only server-persisted candidates addressed by set ID."""
 
-    if request.candidates:
-        candidates = list(request.candidates)
-        if request.candidate_ids:
-            by_id = {candidate.id: candidate for candidate in candidates}
-            candidates = [by_id[candidate_id] for candidate_id in request.candidate_ids]
-    else:
-        candidates = _lookup_candidates(request.candidate_ids or [])
-        if len(candidates) != len(request.candidate_ids or []):
-            return JSONResponse(
-                status_code=404,
-                content={
-                    "status": "error",
-                    "error": {
-                        "code": "CANDIDATES_NOT_FOUND",
-                        "message": "요청한 여행 후보가 만료되었거나 존재하지 않습니다.",
-                    },
-                },
-            )
+    try:
+        candidate_set = await asyncio.to_thread(
+            candidate_set_store.load,
+            request.candidate_set_id,
+            request.candidate_ids,
+            request_fingerprint=request.request_fingerprint,
+        )
+    except CandidateSetError as error:
+        return JSONResponse(
+            status_code=error.http_status,
+            content={
+                "status": "error",
+                "error": {"code": error.code, "message": error.message},
+            },
+        )
+    try:
+        result = await asyncio.to_thread(
+            recommendation_service.rank,
+            candidate_set.candidates,
+            request.mode,
+            custom_weights=request.custom_weights,
+            limit=request.limit,
+        )
+    except RecommendationError as error:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "status": "error",
+                "error": {"code": "INVALID_RECOMMENDATION_REQUEST", "message": str(error)},
+            },
+        )
+    return result.model_copy(
+        update={
+            "candidate_set_id": candidate_set.id,
+            "request_fingerprint": candidate_set.request_fingerprint,
+        }
+    )
+
+
+async def debug_rank_recommendations(
+    request: RecommendationDebugRankRequest,
+) -> RankingResult | JSONResponse:
+    """Rank caller-supplied full candidates only when KTO_DEBUG=1."""
+
+    if not TOLL_DEBUG_MODE:
+        return JSONResponse(status_code=404, content={"status": "not_found"})
+    candidates = list(request.candidates)
+    if request.candidate_ids:
+        by_id = {candidate.id: candidate for candidate in candidates}
+        candidates = [by_id[candidate_id] for candidate_id in request.candidate_ids]
     try:
         return await asyncio.to_thread(
             recommendation_service.rank,
@@ -607,6 +649,16 @@ async def rank_recommendations(
                 "error": {"code": "INVALID_RECOMMENDATION_REQUEST", "message": str(error)},
             },
         )
+
+
+if TOLL_DEBUG_MODE:
+    # Keep full-candidate ranking out of the production OpenAPI surface.
+    app.add_api_route(
+        DEBUG_RECOMMENDATIONS_API_URL,
+        debug_rank_recommendations,
+        methods=["POST"],
+        response_model=RankingResult,
+    )
 
 
 @app.get(CANONICAL_PLACES_API_URL)

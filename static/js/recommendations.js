@@ -14,6 +14,7 @@
   const WEIGHT_NAMES = ["cost", "accommodation", "restaurant", "attraction", "driving"];
   const state = {
     candidates: [],
+    candidateSetId: null,
     candidateFingerprint: null,
     response: null,
     status: "idle",
@@ -49,6 +50,36 @@
 
   function formatConfidence(value) {
     return Number.isFinite(value) ? `데이터 신뢰도 ${(value * 100).toFixed(0)}%` : "신뢰도 확인 불가";
+  }
+
+  function formatPlaceCount(candidate, key, value) {
+    const rawStatus = candidate && candidate.component_statuses
+      ? candidate.component_statuses[key]
+      : null;
+    const status = typeof rawStatus === "string" ? rawStatus.toLowerCase() : "unknown";
+    const count = Number.isInteger(value) && value >= 0 ? value : null;
+    if (!["ok", "empty", "partial"].includes(status)) {
+      return "확인 불가";
+    }
+    if (status === "partial") {
+      return count === null ? "확인 불가 · 일부만 확인" : `${count}곳 · 일부만 확인`;
+    }
+    return count === null ? "확인 불가" : `${count}곳`;
+  }
+
+  function knownSubtotalLabel(candidate) {
+    const costs = candidate && candidate.costs ? candidate.costs : {};
+    const status = typeof costs.status === "string" ? costs.status.toUpperCase() : "UNKNOWN";
+    return status === "PARTIAL" && Number.isFinite(costs.known_subtotal_krw)
+      ? `총비용 확인 불가 · 확인된 비용 ${formatWon(costs.known_subtotal_krw)}`
+      : "총비용 확인 불가 · 확인된 비용 없음";
+  }
+
+  function appendBadge(card, text) {
+    const badge = document.createElement("span");
+    badge.className = "recommendation-card__badge recommendation-card__badge--warning";
+    badge.textContent = text;
+    card.appendChild(badge);
   }
 
   function appendList(card, className, title, values) {
@@ -96,17 +127,21 @@
     card.appendChild(heading);
 
     const candidate = candidateById.get(recommendation.candidate_id);
+    const candidateCosts = candidate && candidate.costs ? candidate.costs : null;
+    if (Number.isFinite(recommendation.confidence) && recommendation.confidence < 0.5) {
+      appendBadge(card, "잠정 추천 · 데이터 신뢰도 낮음");
+    }
+    if (candidateCosts && candidateCosts.status === "ESTIMATED_COMPLETE") {
+      appendBadge(card, "비용 일부 추정");
+    }
     const metrics = document.createElement("div");
     metrics.className = "recommendation-card__metrics";
     const total = candidate && candidate.costs ? candidate.costs.total_krw : null;
-    const knownSubtotal = candidate && candidate.costs ? candidate.costs.known_subtotal_krw : null;
     const totalLabel = Number.isFinite(total)
       ? candidate && candidate.costs && candidate.costs.status === "ESTIMATED_COMPLETE"
         ? `예상 총비용 ${formatWon(total)}`
         : `총비용 ${formatWon(total)}`
-      : Number.isFinite(knownSubtotal) && knownSubtotal > 0
-        ? `총비용 확인 불가 · 확인된 비용 ${formatWon(knownSubtotal)}`
-        : "총비용 확인 불가 · 확인된 비용 없음";
+      : knownSubtotalLabel(candidate);
     [
       totalLabel,
       formatConfidence(recommendation.confidence),
@@ -114,7 +149,7 @@
         ? `운전 ${candidate.quality.driving_duration_min.toFixed(0)}분`
         : "운전시간 확인 불가",
       candidate && candidate.quality
-        ? `관광지 ${Number(candidate.quality.nearby_attraction_count) || 0}곳`
+        ? `관광지 ${formatPlaceCount(candidate, "attractions", candidate.quality.nearby_attraction_count)}`
         : "관광지 확인 불가",
     ].forEach((value) => {
       const item = document.createElement("span");
@@ -250,10 +285,15 @@
       setStatus("먼저 여행 후보를 조립하세요.", "error");
       return false;
     }
+    if (!state.candidateSetId || !state.candidateFingerprint) {
+      setStatus("후보 집합 식별자를 확인할 수 없습니다. 여행 후보를 다시 조립하세요.", "error");
+      return false;
+    }
     if (activeController) {
       activeController.abort();
     }
     const requestId = ++state.requestId;
+    const candidateSetId = state.candidateSetId;
     const candidateFingerprint = state.candidateFingerprint;
     activeController = new AbortController();
     state.status = "loading";
@@ -261,13 +301,13 @@
     state.error = null;
     setStatus("후보의 비용·품질·신뢰도를 비교하는 중입니다…", "active");
     render();
+    const selectedWeights = customWeights();
     const payload = {
-      mode: selectedMode(),
-      // Candidate IDs use the server's latest ephemeral candidate registry.
-      // The API still accepts full candidates for offline/development calls,
-      // but the browser does not send client-controlled feature values back.
+      mode: selectedWeights ? "custom" : selectedMode(),
+      candidate_set_id: candidateSetId,
       candidate_ids: state.candidates.map((candidate) => candidate.id),
-      custom_weights: customWeights(),
+      request_fingerprint: candidateFingerprint,
+      custom_weights: selectedWeights,
       limit: 10,
     };
     try {
@@ -280,7 +320,14 @@
       const body = await response.json().catch(() => null);
       if (
         requestId !== state.requestId ||
+        candidateSetId !== state.candidateSetId ||
         candidateFingerprint !== state.candidateFingerprint
+      ) {
+        return false;
+      }
+      if (
+        response.ok &&
+        (!body || body.candidate_set_id !== candidateSetId || body.request_fingerprint !== candidateFingerprint)
       ) {
         return false;
       }
@@ -304,7 +351,11 @@
       if (error && error.name === "AbortError") {
         return false;
       }
-      if (requestId !== state.requestId || candidateFingerprint !== state.candidateFingerprint) {
+      if (
+        requestId !== state.requestId ||
+        candidateSetId !== state.candidateSetId ||
+        candidateFingerprint !== state.candidateFingerprint
+      ) {
         return false;
       }
       state.status = "error";
@@ -322,6 +373,9 @@
   function setCandidates(payload) {
     clear("새 여행 후보가 반영되었습니다. 추천 순위를 다시 생성하세요.");
     state.candidates = Array.isArray(payload && payload.candidates) ? payload.candidates : [];
+    state.candidateSetId = payload && typeof payload.candidate_set_id === "string"
+      ? payload.candidate_set_id
+      : null;
     state.candidateFingerprint = payload && payload.request_fingerprint ? payload.request_fingerprint : null;
     if (state.candidates.length) {
       setStatus("여행 후보가 준비되었습니다. 추천 모드를 선택하세요.", "active");
@@ -345,6 +399,7 @@
   ].forEach((eventName) => {
     window.addEventListener(eventName, () => {
       state.candidates = [];
+      state.candidateSetId = null;
       state.candidateFingerprint = null;
       invalidate("여행 조건이 변경되어 추천 결과를 초기화했습니다.");
       render();
@@ -398,8 +453,11 @@
   window.KoreaTripRecommendations = Object.freeze({
     rank,
     clear: () => clear("추천 결과를 초기화했습니다."),
+    formatPlaceCount,
     getState: () => ({
       candidates: state.candidates,
+      candidateSetId: state.candidateSetId,
+      candidateFingerprint: state.candidateFingerprint,
       response: state.response,
       status: state.status,
       error: state.error,

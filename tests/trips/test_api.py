@@ -53,6 +53,8 @@ def test_trip_candidates_api_assembles_supplied_dependencies_without_fetching(
     body = response.json()
     assert body["status"] == "ok"
     assert body["complete"] is True
+    assert body["candidate_set_id"].startswith("cs_")
+    assert body["request_fingerprint"]
     assert len(body["candidates"]) == 1
     candidate = body["candidates"][0]
     assert candidate["costs"]["driving_krw"] == 44_000
@@ -100,6 +102,7 @@ def test_trip_candidates_api_returns_partial_without_erasing_places_when_booking
     body = response.json()
     assert body["status"] == "partial"
     assert body["complete"] is False
+    assert body["candidate_set_id"].startswith("cs_")
     candidate = body["candidates"][0]
     assert candidate["costs"]["known_subtotal_krw"] == 44_000
     assert candidate["costs"]["total_krw"] is None

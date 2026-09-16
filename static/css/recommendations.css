@@ -144,6 +144,20 @@
   white-space: nowrap;
 }
 
+.recommendation-card__badge {
+  border-radius: 999px;
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  margin-top: 0.55rem;
+  padding: 0.2rem 0.5rem;
+}
+
+.recommendation-card__badge--warning {
+  background: #fff1d6;
+  color: #8a5a16;
+}
+
 .recommendation-card__metrics {
   border-top: 1px solid var(--line, #e7e0d7);
   color: var(--muted, #6f6a63);

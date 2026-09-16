@@ -602,7 +602,11 @@ accommodation offer remains a separate candidate input.
 
 The browser’s `여행 후보` panel uses DOM APIs and displays verified totals,
 estimated totals, and incomplete totals with separate wording. Nullable rating,
-price, and review fields remain unknown in the UI as well.
+price, and review fields remain unknown in the UI as well. Each response also
+contains an opaque `candidate_set_id`; candidate sets are stored in the separate
+`data/trip_candidates.sqlite3` database with a configurable
+`KTO_CANDIDATE_SET_TTL_S` (default one hour). Sets are isolated and are not
+replaced when another tab or request generates a new batch.
 
 ## V1.0 Explainable Recommendations
 
@@ -612,11 +616,27 @@ V1.0 ranks already assembled `TripCandidate` records through:
 POST /api/recommendations/rank
 ```
 
+The production request addresses one persisted candidate set and does not accept
+full client-supplied candidates:
+
+```json
+{
+  "candidate_set_id": "cs_…",
+  "candidate_ids": ["tc_…"],
+  "request_fingerprint": "…",
+  "mode": "balanced",
+  "custom_weights": null,
+  "limit": 10
+}
+```
+
 The ranker supports `balanced`, `lowest_cost`, `value`,
-`accommodation_quality`, `sightseeing`, and `low_driving` modes, plus validated
-custom weights for cost, accommodation, restaurants, attractions, and driving.
-Weights are normalized only after unavailable features are removed. A missing
-feature remains `null`; it is never silently converted to a zero-quality score.
+`accommodation_quality`, `sightseeing`, `low_driving`, and `custom` modes.
+`custom` uses only positive-weight features that are actually available and
+renormalizes their weights; it does not apply a preset mode’s required feature.
+A missing feature remains `null`; it is never silently converted to a
+zero-quality score. Full-candidate ranking is available only at
+`/api/debug/recommendations/rank` when `KTO_DEBUG=1`.
 
 Total-cost ranking uses `total_krw` only. Partial `known_subtotal_krw` candidates
 cannot appear as cheap complete trips, while estimated-complete candidates are
@@ -628,6 +648,8 @@ cost a second time.
 Every recommendation includes normalized feature scores, confidence,
 strengths, weaknesses, warnings, and weighted contribution traces. Ranking is
 deterministic, uses stable tie-breaks, and performs no crawler, OSRM, or toll
-request. The browser recommendation panel supports preset modes and accessible
-custom-weight sliders; changing any candidate dependency invalidates the old
-ranking.
+request. Confidence is kept separate from preference score; a low-confidence
+first place is shown as a provisional recommendation in the UI. The browser
+recommendation panel supports preset modes and accessible custom-weight
+sliders; enabling the sliders sends `mode=custom`, and changing any candidate
+dependency invalidates the old ranking.

@@ -25,6 +25,7 @@ class RecommendationMode(str, Enum):
     ACCOMMODATION_QUALITY = "accommodation_quality"
     SIGHTSEEING = "sightseeing"
     LOW_DRIVING = "low_driving"
+    CUSTOM = "custom"
 
 
 class RecommendationWeights(BaseModel):
@@ -114,18 +115,42 @@ class ExcludedCandidate(BaseModel):
 
 
 class RecommendationRankRequest(BaseModel):
-    """Ranking request using full candidates or IDs from the local registry."""
+    """Production ranking request addressed to one persisted candidate set."""
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
+    candidate_set_id: str = Field(min_length=1, max_length=128)
     mode: RecommendationMode = RecommendationMode.BALANCED
-    candidates: list[TripCandidate] = Field(default_factory=list, max_length=200)
-    candidate_ids: list[str] | None = Field(default=None, max_length=200)
+    candidate_ids: list[str] | None = Field(default=None, min_length=1, max_length=200)
+    request_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     custom_weights: RecommendationWeights | None = None
     limit: int = Field(default=10, strict=True, ge=1, le=200)
 
     @model_validator(mode="after")
     def validate_candidate_selection(self) -> RecommendationRankRequest:
+        if not self.candidate_set_id.strip():
+            raise ValueError("candidate_set_id must not be blank")
+        if self.candidate_ids is not None:
+            if len(set(self.candidate_ids)) != len(self.candidate_ids):
+                raise ValueError("candidate_ids must be unique")
+            if any(not value.strip() for value in self.candidate_ids):
+                raise ValueError("candidate_ids must not be blank")
+        return self
+
+
+class RecommendationDebugRankRequest(BaseModel):
+    """Full-candidate ranking contract available only in explicit debug mode."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    mode: RecommendationMode = RecommendationMode.BALANCED
+    candidates: list[TripCandidate] = Field(default_factory=list, max_length=200)
+    candidate_ids: list[str] | None = Field(default=None, min_length=1, max_length=200)
+    custom_weights: RecommendationWeights | None = None
+    limit: int = Field(default=10, strict=True, ge=1, le=200)
+
+    @model_validator(mode="after")
+    def validate_candidate_selection(self) -> RecommendationDebugRankRequest:
         if not self.candidates and not self.candidate_ids:
             raise ValueError("candidates or candidate_ids are required")
         if self.candidate_ids:
@@ -133,11 +158,10 @@ class RecommendationRankRequest(BaseModel):
                 raise ValueError("candidate_ids must be unique")
             if any(not value.strip() for value in self.candidate_ids):
                 raise ValueError("candidate_ids must not be blank")
-            if self.candidates:
-                known = {candidate.id for candidate in self.candidates}
-                missing = [value for value in self.candidate_ids if value not in known]
-                if missing:
-                    raise ValueError("candidate_ids must refer to supplied candidates")
+            known = {candidate.id for candidate in self.candidates}
+            missing = [value for value in self.candidate_ids if value not in known]
+            if missing:
+                raise ValueError("candidate_ids must refer to supplied candidates")
         ids = [candidate.id for candidate in self.candidates]
         if len(ids) != len(set(ids)):
             raise ValueError("candidate IDs must be unique")
@@ -156,12 +180,16 @@ class RankingResult(BaseModel):
     candidate_count: int = Field(ge=0)
     eligible_count: int = Field(ge=0)
     candidate_set_fingerprint: str = Field(min_length=64, max_length=64)
+    candidate_set_id: str | None = Field(default=None, min_length=1, max_length=128)
+    request_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     weights: RecommendationWeights
     warnings: list[str] = Field(default_factory=list, max_length=50)
     generated_at: datetime
 
     @model_validator(mode="after")
     def validate_ranking_state(self) -> RankingResult:
+        if (self.candidate_set_id is None) != (self.request_fingerprint is None):
+            raise ValueError("candidate_set_id and request_fingerprint must be provided together")
         if self.eligible_count < len(self.recommendations):
             raise ValueError("eligible_count cannot be smaller than returned recommendations")
         ranks = [recommendation.rank for recommendation in self.recommendations]
@@ -191,6 +219,7 @@ __all__ = [
     "ExcludedCandidate",
     "RankingResult",
     "Recommendation",
+    "RecommendationDebugRankRequest",
     "RecommendationFeatureScores",
     "RecommendationMode",
     "RecommendationRankRequest",

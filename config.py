@@ -17,6 +17,7 @@ ENTITY_RESOLVE_API_URL = "/api/entities/resolve"
 CANONICAL_PLACES_API_URL = "/api/places/canonical"
 TRIP_CANDIDATES_API_URL = "/api/trips/candidates"
 RECOMMENDATIONS_API_URL = "/api/recommendations/rank"
+DEBUG_RECOMMENDATIONS_API_URL = "/api/debug/recommendations/rank"
 ROUTE_API_URL = "/api/routes"
 ROUTING_STATUS_URL = "/api/routing/status"
 TOLL_STATUS_URL = "/api/tolls/status"
@@ -57,6 +58,13 @@ ACCOMMODATION_CACHE_DB = PROJECT_ROOT / "data" / "accommodation_cache.sqlite3"
 # V0.8 canonical entities are derived data and intentionally use a third DB;
 # neither V0.6 accommodation rows nor V0.7 place rows are migrated or deleted.
 ENTITY_RESOLUTION_DB = PROJECT_ROOT / "data" / "entity_resolution.sqlite3"
+# Candidate sets are ephemeral assembled inputs for recommendation ranking.
+# Keeping them in their own SQLite database makes the candidate-ID API
+# consistent across threads and Uvicorn workers without mixing raw source
+# caches with application state.
+CANDIDATE_SET_DB = PROJECT_ROOT / "data" / "trip_candidates.sqlite3"
+CANDIDATE_SET_TTL_S = float(os.getenv("KTO_CANDIDATE_SET_TTL_S", "3600"))
+CANDIDATE_SET_MAX_SETS = int(os.getenv("KTO_CANDIDATE_SET_MAX_SETS", "1000"))
 OFFICIAL_TOLL_URL = "https://www.ex.co.kr/portal/usefee/selectUseFeeNList.do"
 OFFICIAL_TOLL_HOSTNAME = "www.ex.co.kr"
 TOLL_CACHE_TTL_DAYS = 30
@@ -124,9 +132,10 @@ FUEL_BROWSER_ARTIFACT_DIR = (
 )
 
 
-# The browser source is deliberately the production default.  These separate
-# timeouts distinguish navigation, DOM readiness, and the result submission so
-# a slow official page is diagnosable without allowing an infinite wait.
+# HTTP is the production primary path. Playwright is kept warm as an
+# exceptional fallback. These separate timeouts distinguish navigation, DOM
+# readiness, and result submission so a slow official page is diagnosable
+# without allowing an infinite wait.
 TOLL_BROWSER_NAVIGATION_TIMEOUT_S = float(os.getenv("KTO_TOLL_BROWSER_NAVIGATION_TIMEOUT_S", "30"))
 TOLL_BROWSER_SELECTOR_TIMEOUT_S = float(os.getenv("KTO_TOLL_BROWSER_SELECTOR_TIMEOUT_S", "15"))
 TOLL_BROWSER_RESULT_TIMEOUT_S = float(os.getenv("KTO_TOLL_BROWSER_RESULT_TIMEOUT_S", "30"))

@@ -1,5 +1,18 @@
 """V0.9 trip-candidate assembly and cost-completeness layer."""
 
+from backend.trips.candidate_sets import (
+    CANDIDATE_SET_SCHEMA_VERSION,
+    CandidateSet,
+    CandidateSetCapacityError,
+    CandidateSetCorruptError,
+    CandidateSetError,
+    CandidateSetExpiredError,
+    CandidateSetFingerprintMismatchError,
+    CandidateSetMismatchError,
+    CandidateSetNotFoundError,
+    CandidateSetStore,
+    CandidateSetVersionMismatchError,
+)
 from backend.trips.models import (
     CostComponent,
     CostComponentStatus,
@@ -24,7 +37,18 @@ from backend.trips.service import (
 )
 
 __all__ = [
+    "CANDIDATE_SET_SCHEMA_VERSION",
     "AccommodationCostResult",
+    "CandidateSet",
+    "CandidateSetCapacityError",
+    "CandidateSetCorruptError",
+    "CandidateSetError",
+    "CandidateSetExpiredError",
+    "CandidateSetFingerprintMismatchError",
+    "CandidateSetMismatchError",
+    "CandidateSetNotFoundError",
+    "CandidateSetStore",
+    "CandidateSetVersionMismatchError",
     "CostComponent",
     "CostComponentStatus",
     "SourceDataStatus",
