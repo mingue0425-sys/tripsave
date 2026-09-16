@@ -11,6 +11,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from backend.async_lock import LoopLocalAsyncLock
 from backend.geo import haversine_distance_meters
 from backend.models import Location
 from backend.routing.identity import make_route_id
@@ -35,6 +36,7 @@ from backend.tolls.models import (
 from backend.tolls.names import normalize_toll_name, official_query_name
 from backend.tolls.official import (
     KoreaExpresswayTollCrawler,
+    OBSERVED_OFFICIAL_STATION_ALIASES,
     OfficialStationStore,
     OfficialTollError,
     OfficialTollLookup,
@@ -77,10 +79,10 @@ class TollCalculator:
             source_url=OFFICIAL_TOLL_URL,
             station_store=OfficialStationStore(index_path),
         )
-        self._lookup_lock = asyncio.Lock()
-        self._inflight_lock = asyncio.Lock()
+        self._lookup_lock = LoopLocalAsyncLock()
+        self._inflight_lock = LoopLocalAsyncLock()
         self._inflight: dict[str, asyncio.Task] = {}
-        self._refresh_lock = asyncio.Lock()
+        self._refresh_lock = LoopLocalAsyncLock()
         self._refresh_inflight: dict[str, asyncio.Task] = {}
         self._background_tasks: set[asyncio.Task] = set()
         self._failure_cooldown: dict[str, tuple[float, str]] = {}
@@ -736,16 +738,23 @@ class TollCalculator:
         return mismatch <= allowed
 
     @staticmethod
+    def _official_station_identity(value: str) -> str:
+        query = official_query_name(value)
+        canonical = OBSERVED_OFFICIAL_STATION_ALIASES.get(query, query)
+        return normalize_toll_name(canonical)
+
+    @classmethod
     def _official_pair_is_consistent(
+        cls,
         entry_name: str,
         exit_name: str,
         lookup: OfficialTollLookup,
     ) -> bool:
-        requested_entry = normalize_toll_name(entry_name)
-        requested_exit = normalize_toll_name(exit_name)
+        requested_entry = cls._official_station_identity(entry_name)
+        requested_exit = cls._official_station_identity(exit_name)
         return (
-            requested_entry == normalize_toll_name(lookup.entry_name)
-            and requested_exit == normalize_toll_name(lookup.exit_name)
+            requested_entry == cls._official_station_identity(lookup.entry_name)
+            and requested_exit == cls._official_station_identity(lookup.exit_name)
         )
 
     @staticmethod

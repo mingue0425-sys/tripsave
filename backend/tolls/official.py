@@ -30,6 +30,7 @@ import httpx
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from backend.async_lock import LoopLocalAsyncLock
 from backend.tolls.models import TollVehicleClass
 from backend.tolls.names import normalize_toll_name, official_query_name
 from backend.tolls.schema import connect_database, initialize_schema
@@ -737,7 +738,7 @@ class HttpTollClient:
         # dictionary.  A partial station table is still useful for positive
         # alias hits, but it must not make an unknown station look invalid.
         self._station_directory_complete = persisted_directory is not None
-        self._lock = asyncio.Lock()
+        self._lock = LoopLocalAsyncLock()
         self._next_request_at = 0.0
         self._robots_checked = False
         self._client: httpx.AsyncClient | None = None
@@ -1085,7 +1086,7 @@ class BrowserTollClient:
         # the authoritative mapping for the requested pair.
         self._directory_loaded = persisted_directory is not None
         self._stored_stations = stored
-        self._lock = asyncio.Lock()
+        self._lock = LoopLocalAsyncLock()
         self.last_request_events: list[dict[str, object]] = []
         self.last_station_directory_count = len(self.station_directory.stations)
         self.station_directory_status = (
@@ -1670,7 +1671,7 @@ class KoreaExpresswayTollCrawler:
         # Keep source result metadata paired with the lookup that produced it.
         # The HTTP and browser clients are reusable, so a reverse prefetch
         # must not reset their last trace before the caller copies it.
-        self._lookup_lock = asyncio.Lock()
+        self._lookup_lock = LoopLocalAsyncLock()
 
     @staticmethod
     def _fallback_allowed(error: OfficialTollError) -> bool:

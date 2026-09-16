@@ -12,6 +12,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from backend.async_lock import LoopLocalAsyncLock
 from backend.fuel.cache import FuelCacheError, FuelPriceCache
 from backend.fuel.calculator import FuelCalculationError, FuelCostCalculator
 from backend.fuel.errors import InvalidFuelRequestError
@@ -106,7 +107,7 @@ class FuelPriceService:
         self.source = source or OfficialFuelPriceSource()
         self.metrics: Counter[str] = Counter()
         self.last_diagnostics: dict[str, object] = {}
-        self._lookup_lock = asyncio.Lock()
+        self._lookup_lock = LoopLocalAsyncLock()
 
     async def status(self) -> dict[str, object]:
         return {

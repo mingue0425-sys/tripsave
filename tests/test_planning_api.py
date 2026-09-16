@@ -1,11 +1,16 @@
 from fastapi.testclient import TestClient
 
-from app import app
+from app import app, poi_service
 
 client = TestClient(app)
 
 
-def test_poi_api_reports_missing_local_index_as_unavailable():
+def test_poi_api_reports_missing_local_index_as_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        poi_service.repository,
+        "database_path",
+        tmp_path / "missing-poi.sqlite3",
+    )
     response = client.post(
         "/api/poi/search",
         json={

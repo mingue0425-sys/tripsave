@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+from backend.async_lock import LoopLocalAsyncLock
 from backend.models import Location
 from backend.routing.errors import RoutingError
 from backend.routing.osrm import OSRMClient
@@ -25,7 +26,7 @@ class ItineraryService:
 
     def __init__(self, routing_client: OSRMClient) -> None:
         self.routing_client = routing_client
-        self._table_lock = asyncio.Lock()
+        self._table_lock = LoopLocalAsyncLock()
 
     @staticmethod
     def _locations(request: OptimizeRouteRequest) -> list[Location]:

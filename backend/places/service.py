@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Callable, Iterable
 
+from backend.async_lock import LoopLocalAsyncLock
 from backend.places.models import (
     PlaceCategory,
     PlaceRecord,
@@ -50,7 +50,7 @@ class PlaceService:
         self.cache = cache or PlaceCache()
         self.cache_ttl_seconds = cache_ttl_seconds
         self.clock = clock or (lambda: datetime.now(timezone.utc))
-        self._search_lock = asyncio.Lock()
+        self._search_lock = LoopLocalAsyncLock()
 
     async def search(self, request: PlaceSearchRequest) -> PlaceSearchResponse:
         """Collect each requested category and return a canonical response."""

@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from backend.async_lock import LoopLocalAsyncLock
 from backend.fuel.models import FuelPriceResult, FuelType
 from backend.fuel.parser import (
     FuelParseError,
@@ -190,7 +191,7 @@ class BrowserFuelClient:
             os.getenv("KTO_TOLL_BROWSER_EXECUTABLE_PATH"),
         )
         self.artifacts_dir = Path(artifacts_dir) if artifacts_dir else None
-        self._lock = asyncio.Lock()
+        self._lock = LoopLocalAsyncLock()
         self._next_lookup_at = 0.0
         self.last_request_events: list[dict[str, object]] = []
         self.blocked_external_urls: list[str] = []
