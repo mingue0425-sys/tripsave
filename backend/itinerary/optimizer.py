@@ -42,25 +42,22 @@ def _path_key(
     path: tuple[str, ...],
     edges: list[MatrixEntry],
     mode: OptimizationMode,
-) -> tuple[object, ...]:
+) -> tuple[object, ...] | None:
     distance = sum(edge.distance_m for edge in edges)
     duration = sum(edge.duration_s for edge in edges)
-    missing_cost = sum(not edge.cost_complete for edge in edges)
-    known_cost = sum(edge.cost_krw or 0 for edge in edges if edge.cost_complete)
     if mode is OptimizationMode.FASTEST:
         return (duration, distance, path)
     if mode is OptimizationMode.SHORTEST:
         return (distance, duration, path)
-    # A path with unknown toll/fuel is never made artificially cheap.  Complete
-    # cost paths are preferred; when none is complete we use duration only as
-    # a clearly incomplete, deterministic fallback and emit a warning.
-    return (
-        0 if missing_cost == 0 else 1,
-        known_cost if missing_cost == 0 else duration,
-        duration,
-        distance,
-        path,
+    # LOWEST_COST must never silently become FASTEST when pairwise fuel/toll
+    # evidence is unavailable.  An incomplete path is ineligible for the cost
+    # objective; callers receive an explicit infeasible/incomplete result.
+    if any(not edge.cost_complete for edge in edges):
+        return None
+    total_cost = sum(
+        edge.cost_krw for edge in edges if edge.cost_krw is not None
     )
+    return (total_cost, duration, distance, path)
 
 
 def _choose_path(
@@ -73,7 +70,10 @@ def _choose_path(
     if not waypoint_ids:
         path = (origin_id, destination_id)
         edges = _path_edges(path, matrix)
-        return (path, edges) if edges is not None else None
+        if edges is None:
+            return None
+        key = _path_key(path, edges, request.mode)
+        return (path, edges) if key is not None else None
 
     if len(waypoint_ids) <= 8:
         candidates: list[tuple[tuple[object, ...], tuple[str, ...], list[MatrixEntry]]] = []
@@ -81,7 +81,9 @@ def _choose_path(
             path = (origin_id, *permutation, destination_id)
             edges = _path_edges(path, matrix)
             if edges is not None:
-                candidates.append((_path_key(path, edges, request.mode), path, edges))
+                key = _path_key(path, edges, request.mode)
+                if key is not None:
+                    candidates.append((key, path, edges))
         if not candidates:
             return None
         _key, path, edges = min(candidates, key=lambda candidate: candidate[0])
@@ -97,11 +99,9 @@ def _choose_path(
         for candidate in sorted(remaining):
             edge = matrix.get((current, candidate))
             if edge is not None:
-                choices.append((
-                    _path_key((current, candidate), [edge], request.mode),
-                    candidate,
-                    edge,
-                ))
+                key = _path_key((current, candidate), [edge], request.mode)
+                if key is not None:
+                    choices.append((key, candidate, edge))
         if not choices:
             return None
         _key, chosen, _edge = min(choices, key=lambda item: item[0])
@@ -156,6 +156,16 @@ def optimize_matrix(request: OptimizeRouteRequest, entries: list[MatrixEntry]) -
     matrix = _matrix(entries)
     chosen = _choose_path(request, matrix)
     if chosen is None:
+        point_count = len(request.waypoints) + 2
+        expected_directed_edges = point_count * (point_count - 1)
+        has_full_route_matrix = len(matrix) == expected_directed_edges
+        warning = "ROUTE_MATRIX_INCOMPLETE"
+        if (
+            request.mode is OptimizationMode.LOWEST_COST
+            and has_full_route_matrix
+            and any(not edge.cost_complete for edge in matrix.values())
+        ):
+            warning = "ROUTE_COST_MATRIX_INCOMPLETE"
         return OptimizedRoute(
             mode=request.mode,
             origin=request.origin,
@@ -163,7 +173,7 @@ def optimize_matrix(request: OptimizeRouteRequest, entries: list[MatrixEntry]) -
             ordered_waypoints=list(request.waypoints),
             feasible=False,
             cost_complete=False,
-            warnings=["ROUTE_MATRIX_INCOMPLETE"],
+            warnings=[warning],
             start_datetime=_normalise_start(request.start_datetime),
         )
 

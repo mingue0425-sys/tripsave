@@ -14,10 +14,13 @@ class FakeProvider:
     def __init__(self):
         self.calls = 0
         self.fail = False
+        self.delay_s = 0.0
 
     async def daily_forecast(self, lat, lng, start_date, end_date):
         del lat, lng
         self.calls += 1
+        if self.delay_s:
+            await asyncio.sleep(self.delay_s)
         if self.fail:
             raise WeatherProviderError("WEATHER_SOURCE_TIMEOUT")
         fetched_at = datetime(2026, 9, 16, tzinfo=timezone.utc)
@@ -81,6 +84,28 @@ def test_weather_cache_hit_and_zero_precipitation_is_real_value(tmp_path):
     assert second.warnings == ["WEATHER_CACHE_HIT"]
     assert provider.calls == 1
     assert second.forecast[0].precipitation_mm == 0
+
+
+def test_concurrent_identical_cache_misses_are_single_flight(tmp_path):
+    provider = FakeProvider()
+    provider.delay_s = 0.02
+    service = WeatherService(
+        provider,
+        WeatherCache(tmp_path / "weather.sqlite3"),
+        now=lambda: datetime(2026, 9, 16, 1, tzinfo=timezone.utc),
+    )
+
+    async def scenario():
+        return await asyncio.gather(
+            service.forecast(_request()),
+            service.forecast(_request()),
+            service.forecast(_request()),
+        )
+
+    responses = asyncio.run(scenario())
+    assert provider.calls == 1
+    assert all(response.status is WeatherStatus.OK for response in responses)
+    assert sum("WEATHER_CACHE_HIT" in response.warnings for response in responses) == 2
 
 
 def test_response_and_cache_keep_provider_fetched_at(tmp_path):

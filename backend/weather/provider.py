@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from collections import defaultdict
+import re
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Protocol
 from zoneinfo import ZoneInfo
@@ -46,11 +47,74 @@ class UnavailableWeatherProvider:
 
 
 def _condition(sky: str | None, precipitation_type: str | None) -> str | None:
-    if precipitation_type in {"1", "4"}:
-        return "비"
-    if precipitation_type in {"2", "3"}:
-        return "비/눈"
+    precipitation = {
+        "1": "비",
+        "2": "비/눈",
+        "3": "눈",
+        "4": "소나기",
+        "5": "빗방울",
+        "6": "빗방울/눈날림",
+        "7": "눈날림",
+    }.get(precipitation_type)
+    if precipitation is not None:
+        return normalize_condition(precipitation)
     return normalize_condition({"1": "맑음", "3": "구름 많음", "4": "흐림"}.get(sky))
+
+
+def _parse_precipitation_mm(raw: str) -> float | None:
+    """Parse only exact API precipitation amounts without inventing a midpoint."""
+
+    value = raw.strip().replace(" ", "")
+    if value in {"강수없음", "없음", "0", "0.0", "0mm", "0.0mm"}:
+        return 0.0
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)(?:mm)?", value, flags=re.IGNORECASE)
+    if match is None:
+        return None
+    return float(match.group(1))
+
+
+def _daily_condition(
+    sky_entries: list[tuple[str, str]],
+    precipitation_entries: list[tuple[str, str]],
+) -> str | None:
+    """Choose a deterministic travel-day condition from hourly API values."""
+
+    active = {
+        value
+        for _forecast_time, value in precipitation_entries
+        if value not in {"", "0"}
+    }
+    rainish = active & {"1", "4", "5"}
+    snowish = active & {"3", "7"}
+    if "2" in active or "6" in active or (rainish and snowish):
+        return "비/눈"
+    if snowish:
+        return "눈"
+    if "1" in active:
+        return "비"
+    if "4" in active:
+        return "소나기"
+    if "5" in active:
+        return "빗방울"
+
+    def time_value(value: str) -> int | None:
+        if len(value) != 4 or not value.isdigit():
+            return None
+        return int(value)
+
+    daytime = [
+        sky
+        for forecast_time, sky in sky_entries
+        if (parsed := time_value(forecast_time)) is not None and 900 <= parsed <= 1800
+    ]
+    candidates = daytime or [sky for _forecast_time, sky in sky_entries]
+    candidates = [sky for sky in candidates if sky in {"1", "3", "4"}]
+    if not candidates:
+        return None
+    counts = Counter(candidates)
+    severity = {"1": 0, "3": 1, "4": 2}
+    representative = max(counts, key=lambda code: (counts[code], severity[code]))
+    return _condition(representative, "0")
 
 
 class KmaApiWeatherProvider:
@@ -65,9 +129,10 @@ class KmaApiWeatherProvider:
 
     @staticmethod
     def _base_time(now: datetime) -> tuple[str, str]:
-        # KMA publishes village forecasts at fixed three-hour cycles.  Select
-        # the latest stable cycle; the provider still returns only requested
-        # local-calendar dates.
+        # Avoid selecting a cycle at the exact nominal issue minute: the
+        # public product can lag the base time briefly.  A small publication
+        # delay prevents transient empty/error responses around each cycle.
+        effective_now = now - timedelta(minutes=15)
         cycles = [
             (2, "0200"),
             (5, "0500"),
@@ -78,12 +143,12 @@ class KmaApiWeatherProvider:
             (20, "2000"),
             (23, "2300"),
         ]
-        local_hour = now.hour
+        local_hour = effective_now.hour
         selected = (23, "2300")
         for hour, base_time in cycles:
             if local_hour >= hour:
                 selected = (hour, base_time)
-        base_date = now.date()
+        base_date = effective_now.date()
         if local_hour < 2:
             base_date -= timedelta(days=1)
         return base_date.strftime("%Y%m%d"), selected[1]
@@ -121,7 +186,7 @@ class KmaApiWeatherProvider:
         if not isinstance(items, list):
             raise WeatherProviderError("WEATHER_PARSE_FAILED")
 
-        grouped: dict[date, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+        grouped: dict[date, dict[str, list[tuple[str, str]]]] = defaultdict(lambda: defaultdict(list))
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -131,10 +196,11 @@ class KmaApiWeatherProvider:
                 ).date()
                 category = str(item["category"])
                 value = str(item["fcstValue"])
+                forecast_time = str(item.get("fcstTime", "")).zfill(4)
             except (KeyError, ValueError):
                 continue
             if start_date <= item_date <= end_date:
-                grouped[item_date][category].append(value)
+                grouped[item_date][category].append((forecast_time, value))
 
         fetched_at = datetime.now(timezone.utc)
         result: list[DailyWeather] = []
@@ -148,7 +214,7 @@ class KmaApiWeatherProvider:
                 day_values=values,
             ) -> list[float]:
                 parsed: list[float] = []
-                for raw in day_values.get(category, []):
+                for _forecast_time, raw in day_values.get(category, []):
                     try:
                         value = float(raw)
                     except ValueError:
@@ -168,20 +234,29 @@ class KmaApiWeatherProvider:
             min_temps = numbers("TMN", -100.0, 70.0)
             max_temps = numbers("TMX", -100.0, 70.0)
             pops = numbers("POP", 0.0, 100.0)
-            rain = numbers("PCP", 0.0)
             wind = numbers("WSD", 0.0)
             humidity = numbers("REH", 0.0, 100.0)
             sky_values = values.get("SKY", [])
             pty_values = values.get("PTY", [])
-            condition = _condition(
-                sky_values[-1] if sky_values else None,
-                pty_values[-1] if pty_values else None,
+            precipitation_entries = values.get("PCP", [])
+            parsed_precipitation = [
+                _parse_precipitation_mm(raw)
+                for _forecast_time, raw in precipitation_entries
+            ]
+            precipitation_mm = (
+                sum(value for value in parsed_precipitation if value is not None)
+                if precipitation_entries
+                and all(value is not None for value in parsed_precipitation)
+                else None
             )
+            precipitation_text = "; ".join(
+                dict.fromkeys(raw for _forecast_time, raw in precipitation_entries)
+            ) or None
+            condition = _daily_condition(sky_values, pty_values)
             temp_min = min_temps[-1] if min_temps else min(temps) if temps else None
             temp_max = max_temps[-1] if max_temps else max(temps) if temps else None
             if temp_min is not None and temp_max is not None and temp_min > temp_max:
                 raise WeatherProviderError("WEATHER_PARSE_FAILED")
-            precipitation_mm = sum(value for value in rain if value >= 0) if rain else None
             known_values = {
                 "condition": condition,
                 "temp_min_c": temp_min,
@@ -206,6 +281,7 @@ class KmaApiWeatherProvider:
                     temp_max_c=temp_max,
                     precipitation_probability_pct=max(pops) if pops else None,
                     precipitation_mm=precipitation_mm,
+                    precipitation_text=precipitation_text,
                     wind_speed_mps=max(wind) if wind else None,
                     humidity_pct=sum(humidity) / len(humidity) if humidity else None,
                     source=self.name,

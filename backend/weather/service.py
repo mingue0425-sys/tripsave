@@ -9,6 +9,8 @@ from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from backend.async_lock import LoopLocalAsyncLock
+
 from .models import (
     DailyWeather,
     WeatherForecastRequest,
@@ -97,6 +99,7 @@ class WeatherService:
         self._now = now or (lambda: datetime.now(timezone.utc))
         self.fallback_provider = fallback_provider
         self.debug = debug
+        self._lookup_lock = LoopLocalAsyncLock()
 
     @property
     def providers(self) -> tuple[WeatherProvider, ...]:
@@ -224,6 +227,14 @@ class WeatherService:
         )
 
     async def forecast(self, request: WeatherForecastRequest) -> WeatherForecastResponse:
+        # Cache reads and live refreshes are coordinated together so identical
+        # concurrent misses collapse to one provider call.  The lock is local
+        # to each event loop because this service is a process singleton while
+        # TestClient/embedding environments may create multiple loops.
+        async with self._lookup_lock:
+            return await self._forecast_locked(request)
+
+    async def _forecast_locked(self, request: WeatherForecastRequest) -> WeatherForecastResponse:
         timezone_info = self._timezone(request.timezone)
         raw_now = self._now()
         now = raw_now if raw_now.tzinfo else raw_now.replace(tzinfo=timezone.utc)

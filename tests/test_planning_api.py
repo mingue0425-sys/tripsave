@@ -57,6 +57,37 @@ def test_itinerary_api_uses_supplied_matrix_without_osrm():
     assert payload["total_cost_krw"] is None
 
 
+def test_itinerary_api_lowest_cost_does_not_fall_back_to_duration():
+    response = client.post(
+        "/api/routes/optimize",
+        json={
+            "origin": {"lat": 35.10, "lng": 129.00, "name": "출발"},
+            "destination": {"lat": 35.20, "lng": 129.10, "name": "도착"},
+            "waypoints": [],
+            "mode": "lowest_cost",
+            "include_geometry": False,
+            "matrix": [
+                {
+                    "from_id": "origin",
+                    "to_id": "destination",
+                    "distance_m": 1000,
+                    "duration_s": 60,
+                },
+                {
+                    "from_id": "destination",
+                    "to_id": "origin",
+                    "distance_m": 1000,
+                    "duration_s": 60,
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["feasible"] is False
+    assert response.json()["warnings"] == ["ROUTE_COST_MATRIX_INCOMPLETE"]
+
+
 def test_weather_api_preserves_horizon_blocker():
     response = client.post(
         "/api/weather/forecast",

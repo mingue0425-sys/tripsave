@@ -90,7 +90,8 @@ def test_lowest_cost_does_not_treat_unknown_as_zero():
     )
     assert result.total_cost_krw is None
     assert result.cost_complete is False
-    assert "ROUTE_COST_INCOMPLETE" in result.warnings
+    assert result.feasible is False
+    assert result.warnings == ["ROUTE_COST_MATRIX_INCOMPLETE"]
 
     complete = optimize_matrix(
         _request(points, OptimizationMode.LOWEST_COST),
@@ -98,6 +99,23 @@ def test_lowest_cost_does_not_treat_unknown_as_zero():
     )
     assert complete.total_cost_krw is not None
     assert complete.cost_complete is True
+
+
+def test_lowest_cost_never_uses_duration_as_an_unknown_cost_fallback():
+    points = _points()
+    duration_preference = {
+        ("O", "C"): 1,
+        ("C", "B"): 1,
+        ("B", "A"): 1,
+        ("A", "D"): 1,
+    }
+    result = optimize_matrix(
+        _request(points, OptimizationMode.LOWEST_COST),
+        _matrix(points, preferred=duration_preference, unknown_cost=True),
+    )
+    assert result.feasible is False
+    assert result.total_cost_krw is None
+    assert result.warnings == ["ROUTE_COST_MATRIX_INCOMPLETE"]
 
 
 def test_eta_and_visit_duration_are_local_time_deterministic():

@@ -2,6 +2,7 @@ import asyncio
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -9,7 +10,13 @@ import pytest
 import backend.weather.kma_web as kma_web
 from backend.weather.kma_web import BrowserFetchResult, KmaWebBrowserClient, KmaWebWeatherProvider
 from backend.weather.location import KmaLocation
-from backend.weather.provider import WeatherProviderError
+from backend.weather.provider import (
+    KmaWeatherProvider,
+    WeatherProviderError,
+    _condition,
+    _daily_condition,
+    _parse_precipitation_mm,
+)
 
 
 FIXTURE = (Path(__file__).with_name("fixtures") / "kma_web_forecast.html").read_text(
@@ -381,3 +388,49 @@ def test_browser_pool_reuses_one_launch_and_closes_cleanly():
     assert browser.close_calls == 1
     assert runtime.stop_calls == 1
     assert client.browser_launch_count == 1
+
+
+def test_api_precipitation_type_mapping_keeps_snow_distinct():
+    assert _condition("1", "1") == "비"
+    assert _condition("1", "2") == "비/눈"
+    assert _condition("1", "3") == "눈"
+    assert _condition("1", "4") == "소나기"
+
+
+def test_api_precipitation_parser_is_conservative_for_ranges():
+    assert _parse_precipitation_mm("강수없음") == 0.0
+    assert _parse_precipitation_mm("0.0mm") == 0.0
+    assert _parse_precipitation_mm("7.5mm") == 7.5
+    assert _parse_precipitation_mm("1.0mm 미만") is None
+    assert _parse_precipitation_mm("30~50mm") is None
+
+
+def test_api_daily_condition_prefers_precipitation_over_late_sky_value():
+    assert _daily_condition(
+        [("0900", "1"), ("1500", "3"), ("2300", "4")],
+        [("0900", "0"), ("1500", "1"), ("2300", "0")],
+    ) == "비"
+
+
+def test_api_daily_condition_uses_daytime_sky_not_late_night_sky():
+    assert _daily_condition(
+        [("0900", "1"), ("1200", "1"), ("1500", "3"), ("2300", "4")],
+        [("0900", "0"), ("1200", "0"), ("1500", "0"), ("2300", "0")],
+    ) == "맑음"
+
+
+def test_api_daily_condition_combines_rain_and_snow_events():
+    assert _daily_condition(
+        [("1200", "4")],
+        [("0900", "1"), ("1500", "3")],
+    ) == "비/눈"
+
+
+def test_api_base_time_waits_for_publication_delay():
+    seoul = ZoneInfo("Asia/Seoul")
+    assert KmaWeatherProvider._base_time(
+        datetime(2026, 9, 16, 2, 5, tzinfo=seoul)
+    ) == ("20260915", "2300")
+    assert KmaWeatherProvider._base_time(
+        datetime(2026, 9, 16, 2, 20, tzinfo=seoul)
+    ) == ("20260916", "0200")

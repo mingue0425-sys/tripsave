@@ -84,6 +84,38 @@ def test_route_corridor_includes_route_poi_outside_destination_radius(tmp_path):
     assert response.results[0].distance_to_route_m is not None
 
 
+def test_route_corridor_bbox_expands_beyond_start_and_end_extrema(tmp_path):
+    repository = PoiRepository(tmp_path / "poi.sqlite3")
+    repository.replace_records(
+        [
+            _record("near-start", PoiCategory.HOSPITAL, 35.9, 126.899),
+            _record("near-end", PoiCategory.HOSPITAL, 36.101, 127.1),
+            _record("too-far", PoiCategory.HOSPITAL, 35.9, 126.896),
+        ]
+    )
+    route = RouteResult(
+        distance_m=30_000,
+        duration_s=2_400,
+        geometry=RouteGeometry(
+            type="LineString",
+            coordinates=[[126.9, 35.9], [127.0, 36.0], [127.1, 36.1]],
+        ),
+    )
+    request = PoiSearchRequest(
+        destination=Location(lat=36.3, lng=127.3, label="far destination"),
+        route=route,
+        categories=[PoiCategory.HOSPITAL],
+        destination_radius_m=100,
+        route_corridor_m=150,
+        limit_per_category=50,
+    )
+
+    response = __import__("asyncio").run(PoiService(repository).search(request))
+
+    assert {record.id for record in response.results} == {"near-start", "near-end"}
+    assert all(record.distance_to_route_m <= 150 for record in response.results)
+
+
 def test_missing_index_is_unavailable_not_empty(tmp_path):
     service = PoiService(PoiRepository(tmp_path / "missing.sqlite3"))
 

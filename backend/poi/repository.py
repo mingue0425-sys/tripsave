@@ -43,6 +43,34 @@ def _bbox(lat: float, lng: float, radius_m: float) -> tuple[float, float, float,
     return lat - lat_delta, lat + lat_delta, lng - lng_delta, lng + lng_delta
 
 
+def _expanded_route_bbox(
+    route_lats: list[float],
+    route_lngs: list[float],
+    radius_m: float,
+) -> tuple[float, float, float, float]:
+    """Expand the complete route extent by the requested corridor radius."""
+
+    min_lat, max_lat = min(route_lats), max(route_lats)
+    min_lng, max_lng = min(route_lngs), max(route_lngs)
+    lat_delta = radius_m / 111_320.0
+    # Use the smallest cosine across the latitude extent so longitude padding
+    # is never narrower than requested at either route extreme.
+    min_cos = max(
+        0.1,
+        min(
+            abs(math.cos(math.radians(min_lat))),
+            abs(math.cos(math.radians(max_lat))),
+        ),
+    )
+    lng_delta = radius_m / (111_320.0 * min_cos)
+    return (
+        min_lat - lat_delta,
+        max_lat + lat_delta,
+        min_lng - lng_delta,
+        max_lng + lng_delta,
+    )
+
+
 class PoiRepository:
     """A separate SQLite file so POI reads never share the toll cache DB."""
 
@@ -198,16 +226,10 @@ class PoiRepository:
         if route_coordinates:
             route_lats = [coordinate[1] for coordinate in route_coordinates]
             route_lngs = [coordinate[0] for coordinate in route_coordinates]
-            route_bounds_raw = _bbox(
-                sum(route_lats) / len(route_lats),
-                sum(route_lngs) / len(route_lngs),
+            route_bounds = _expanded_route_bbox(
+                route_lats,
+                route_lngs,
                 request.route_corridor_m,
-            )
-            route_bounds = (
-                min(min(route_lats), route_bounds_raw[0]),
-                max(max(route_lats), route_bounds_raw[1]),
-                min(min(route_lngs), route_bounds_raw[2]),
-                max(max(route_lngs), route_bounds_raw[3]),
             )
             bounds = (
                 min(bounds[0], route_bounds[0]),
