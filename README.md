@@ -41,6 +41,22 @@ python -m pip install -r requirements.txt
 python -m playwright install chromium
 ```
 
+### One-command quickstart
+
+For a fast, repeatable local setup, run this from the project root:
+
+```bash
+python3 scripts/quickstart.py
+```
+
+The command reuses or creates `.venv`, installs dependencies only when runtime
+imports are missing, checks/installs Playwright Chromium, initializes the
+weather SQLite cache, verifies `/health`, and starts TripSave on
+`http://127.0.0.1:8765`. It does not download or preprocess the large South
+Korea OSRM dataset. Use `--check` to prepare without starting the server,
+`--no-browser` for an HTTP-only weather run, or the existing
+`scripts/setup_routing.py` flow when local routing data is required.
+
 Windows PowerShell:
 
 ```powershell
