@@ -680,10 +680,42 @@ The selected route includes visit durations, local `Asia/Seoul` ETA values,
 daily driving-limit feasibility, and optional final geometry. `LOWEST_COST`
 requires complete pairwise fuel/toll evidence to expose a numeric total.
 
-Weather uses a provider abstraction and an independent SQLite cache. The
-default provider is the official KMA public-data adapter when
-`KTO_WEATHER_API_KEY` is configured; otherwise requests return explicit
-`unavailable` or `not_available_yet` states. Unknown precipitation, wind, and
-temperature values remain null. Stale cache fallback is labeled as stale and
-the weather panel is context only; it does not alter V1.0 recommendation
-ranking.
+Weather uses a provider abstraction and an independent SQLite cache. With
+`KTO_WEATHER_KMA_API_KEY` (or the compatible `KTO_WEATHER_API_KEY`) configured,
+the API provider remains first; transient API failures may use the fixed KMA
+web provider when `KTO_WEATHER_API_WEB_FALLBACK=1` (the default). Without a
+key, the web provider is selected directly.
+
+The web provider reads only the public [KMA short-term forecast page](https://www.weather.go.kr/w/forecast/overall/short-term.do)
+and the HTML fragment that the page visibly loads. It resolves `lat/lng` via
+the page's public KMA area lookup, validates the official host/path on every
+redirect, fetches HTML with HTTP first, and uses one reusable Playwright
+Chromium process only when the HTML has insufficient visible forecast data.
+The browser flow uses the normal public page and its visible one-hour tab; it
+does not bypass login, CAPTCHA, access controls, robots rules, rate limits, or
+private endpoints. Unknown values stay `null`; ranges such as `5~10mm` are
+kept as bounds/text and `1mm 미만` is never changed to `0mm`. KMA forecasts are
+returned only through the page's current horizon, with the Asia/Seoul local
+calendar used for date decisions.
+
+The weather cache uses a 3-hour default TTL and a 24-hour maximum stale age.
+Failed live requests return a clearly labeled stale cache when one exists,
+otherwise `unavailable`; the browser panel keeps destination/date request
+fingerprints so an old response cannot overwrite a changed selection. Weather
+is context only and does not alter V1.0 recommendation ranking.
+
+For public-page checks and optional live tests:
+
+```bash
+KTO_RUN_LIVE_WEATHER=1 .venv/bin/pytest -q tests/weather/test_live.py -m live
+```
+
+For the local browser flow (including cache reuse, no direct KMA request from
+the frontend, and destination-change invalidation), start the app without an
+API key and run:
+
+```bash
+KTO_WEATHER_CACHE_DB=/tmp/tripsave-weather.sqlite3 KTO_TOLL_BROWSER_WARMUP=0 \
+  .venv/bin/uvicorn app:app --host 127.0.0.1 --port 8765
+.venv/bin/python scripts/weather_browser_smoke.py
+```

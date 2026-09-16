@@ -4,6 +4,14 @@ import os
 from pathlib import Path
 from urllib.parse import urlsplit
 
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
 STATIC_DIR = PROJECT_ROOT / "static"
@@ -79,18 +87,77 @@ POI_DEFAULT_ROUTE_CORRIDOR_M = float(
 POI_DEFAULT_LIMIT_PER_CATEGORY = int(
     os.getenv("KTO_POI_LIMIT_PER_CATEGORY", "50")
 )
-WEATHER_CACHE_DB = PROJECT_ROOT / "data" / "weather_cache.sqlite3"
+WEATHER_CACHE_DB = Path(
+    os.getenv("KTO_WEATHER_CACHE_DB", str(PROJECT_ROOT / "data" / "weather_cache.sqlite3"))
+)
 WEATHER_CACHE_TTL_S = float(os.getenv("KTO_WEATHER_CACHE_TTL_S", "10800"))
 WEATHER_STALE_MAX_AGE_S = float(
-    os.getenv("KTO_WEATHER_STALE_MAX_AGE_S", "172800")
+    os.getenv("KTO_WEATHER_STALE_MAX_AGE_S", "86400")
 )
 WEATHER_TIMEZONE = os.getenv("KTO_WEATHER_TIMEZONE", "Asia/Seoul")
-# The official KMA public-data endpoint is fixed in code.  A key is optional;
-# without it the application reports weather as unavailable instead of making
-# an unauthorised or synthetic request.
-WEATHER_KMA_API_KEY = os.getenv("KTO_WEATHER_KMA_API_KEY")
+# The official KMA data endpoint is fixed in code.  Both historical and
+# documented environment names are accepted, with the KMA-specific name
+# taking precedence.  A key is optional; without it the public HTML provider
+# is selected below.
+WEATHER_KMA_API_KEY = os.getenv("KTO_WEATHER_KMA_API_KEY") or os.getenv(
+    "KTO_WEATHER_API_KEY"
+)
 WEATHER_KMA_API_URL = (
     "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst"
+)
+# These are fixed official public pages used by the normal 날씨누리 screen.
+# Query parameters are added only from a server-resolved KMA area code.
+WEATHER_KMA_WEB_PAGE_URL = "https://www.weather.go.kr/w/forecast/overall/short-term.do"
+WEATHER_KMA_WEB_FRAGMENT_URL = (
+    "https://www.weather.go.kr/w/wnuri-fct2021/main/digital-forecast.do"
+)
+WEATHER_KMA_WEB_LOCATION_URL = "https://www.weather.go.kr/w/rest/zone/find/dong.do"
+WEATHER_KMA_WEB_ALLOWED_HOSTS = frozenset({"www.weather.go.kr", "weather.go.kr"})
+# The official page loads these fixed public assets during its normal browser
+# flow.  They are dependencies, not user-selectable weather sources.
+WEATHER_KMA_WEB_BROWSER_DEPENDENCY_HOSTS = frozenset(
+    {
+        "developers.kakao.com",
+        "t1.kakaocdn.net",
+        "webstats.kma.go.kr",
+        "weblog.kma.go.kr",
+    }
+)
+WEATHER_KMA_WEB_ALLOWED_PATHS = frozenset(
+    {
+        "/w/forecast/overall/short-term.do",
+        "/w/wnuri-fct2021/main/digital-forecast.do",
+        "/w/rest/zone/find/dong.do",
+    }
+)
+WEATHER_KMA_WEB_HTTP_TIMEOUT_S = float(
+    os.getenv("KTO_WEATHER_WEB_HTTP_TIMEOUT_S", "15")
+)
+WEATHER_KMA_WEB_CONNECT_TIMEOUT_S = float(
+    os.getenv("KTO_WEATHER_WEB_CONNECT_TIMEOUT_S", "4")
+)
+WEATHER_KMA_WEB_NAVIGATION_TIMEOUT_S = float(
+    os.getenv("KTO_WEATHER_WEB_NAVIGATION_TIMEOUT_S", "20")
+)
+WEATHER_KMA_WEB_SELECTOR_TIMEOUT_S = float(
+    os.getenv("KTO_WEATHER_WEB_SELECTOR_TIMEOUT_S", "12")
+)
+WEATHER_KMA_WEB_PARSE_TIMEOUT_S = float(
+    os.getenv("KTO_WEATHER_WEB_PARSE_TIMEOUT_S", "3")
+)
+WEATHER_KMA_WEB_REQUEST_INTERVAL_S = float(
+    os.getenv("KTO_WEATHER_WEB_REQUEST_INTERVAL_S", "1")
+)
+WEATHER_KMA_WEB_MAX_RESPONSE_BYTES = int(
+    os.getenv("KTO_WEATHER_WEB_MAX_RESPONSE_BYTES", str(2 * 1024 * 1024))
+)
+WEATHER_KMA_WEB_BROWSER_HEADLESS = _env_bool("KTO_WEATHER_WEB_BROWSER_HEADLESS", True)
+WEATHER_KMA_WEB_FALLBACK_ENABLED = _env_bool("KTO_WEATHER_WEB_FALLBACK_ENABLED", True)
+# API-first remains the default when a key exists.  This flag makes the
+# transient-error policy explicit instead of silently changing providers.
+WEATHER_API_WEB_FALLBACK = _env_bool("KTO_WEATHER_API_WEB_FALLBACK", True)
+WEATHER_KMA_WEB_USER_AGENT = (
+    "TripSave/1.1 (+public KMA weather HTML forecast; contact local operator)"
 )
 OFFICIAL_TOLL_URL = "https://www.ex.co.kr/portal/usefee/selectUseFeeNList.do"
 OFFICIAL_TOLL_HOSTNAME = "www.ex.co.kr"
@@ -137,13 +204,6 @@ FUEL_BROWSER_SELECTOR_TIMEOUT_S = float(
 FUEL_BROWSER_RESULT_TIMEOUT_S = float(
     os.getenv("KTO_FUEL_BROWSER_RESULT_TIMEOUT_S", "30")
 )
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().casefold() in {"1", "true", "yes", "on"}
 
 
 FUEL_BROWSER_HEADLESS = _env_bool("KTO_FUEL_BROWSER_HEADLESS", True)
@@ -258,6 +318,8 @@ def map_config() -> dict[str, object]:
         "weatherApiUrl": WEATHER_API_URL,
         "weatherStatusUrl": WEATHER_STATUS_URL,
         "weatherTimezone": WEATHER_TIMEZONE,
+        "weatherProvider": "kma_public" if WEATHER_KMA_API_KEY else "kma_web",
+        "weatherWebFallbackEnabled": WEATHER_KMA_WEB_FALLBACK_ENABLED,
         "selectionStorageKey": "koreaTrip.selection.v1",
         "debug": TOLL_DEBUG_MODE,
     }

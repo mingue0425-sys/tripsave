@@ -11,10 +11,33 @@
   function destination() { const api = window.KoreaTripSelection; return api && typeof api.getDestination === "function" ? api.getDestination() : null; }
   function dateValue(id) { return element(id)?.value || ""; }
   function dateKey() { return `${dateValue("weather-start-date")}|${dateValue("weather-end-date")}`; }
-  function setStatus(message, type) { const target = element("weather-status"); if (!target) return; target.textContent = message; target.classList.toggle("weather-status--error", type === "error"); target.classList.toggle("weather-status--success", type === "success"); target.classList.toggle("weather-status--partial", type === "partial"); }
+  function setStatus(message, type) {
+    const target = element("weather-status");
+    if (!target) return;
+    target.textContent = message;
+    target.classList.toggle("weather-status--error", type === "error");
+    target.classList.toggle("weather-status--success", type === "success");
+    target.classList.toggle("weather-status--partial", type === "partial");
+    target.classList.toggle("weather-status--stale", type === "stale");
+  }
   function currentFingerprint() { return `${latestDestination ? `${latestDestination.lat}|${latestDestination.lng}|${latestDestination.label || latestDestination.name || ""}` : "none"}|${dateKey()}`; }
   function known(value, formatter) { return value === null || value === undefined || !Number.isFinite(Number(value)) ? "확인 불가" : formatter(Number(value)); }
   function formatDate(value) { if (typeof value !== "string") return "날짜 미확인"; const date = new Date(`${value}T00:00:00+09:00`); return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("ko-KR", { timeZone: config.weatherTimezone || "Asia/Seoul", month: "long", day: "numeric", weekday: "short" }); }
+  function precipitationLabel(day) {
+    if (typeof day.precipitation_text === "string" && day.precipitation_text.trim()) return day.precipitation_text;
+    if (day.precipitation_mm !== null && day.precipitation_mm !== undefined) return known(day.precipitation_mm, (value) => `${value.toFixed(1)}mm`);
+    const lower = day.precipitation_min_mm === null || day.precipitation_min_mm === undefined ? null : Number(day.precipitation_min_mm);
+    const upper = day.precipitation_max_mm === null || day.precipitation_max_mm === undefined ? null : Number(day.precipitation_max_mm);
+    if (Number.isFinite(lower) && Number.isFinite(upper)) return `${lower.toFixed(1)}~${upper.toFixed(1)}mm`;
+    if (Number.isFinite(upper)) return `최대 ${upper.toFixed(1)}mm`;
+    return known(day.precipitation_mm, (value) => `${value.toFixed(1)}mm`);
+  }
+  function missingLabel(day) {
+    if (!Array.isArray(day.missing_fields) || !day.missing_fields.length) return "";
+    const labels = { condition: "날씨", temp_min_c: "최저기온", temp_max_c: "최고기온", precipitation_probability_pct: "강수확률", precipitation: "강수량", wind_speed_mps: "풍속" };
+    const names = day.missing_fields.map((field) => labels[field] || field).filter(Boolean);
+    return names.length ? `확인 불가: ${names.join(", ")}` : "";
+  }
   function render() {
     const button = element("weather-search"); const summary = element("weather-summary"); if (!button || !summary) return;
     button.disabled = !latestDestination || !dateValue("weather-start-date") || !dateValue("weather-end-date") || state.status === "loading";
@@ -24,6 +47,8 @@
   }
   function renderResults() {
     const target = element("weather-results"); if (!target) return; target.replaceChildren(); if (!state.response) return;
+    if (state.response.stale || state.response.status === "stale") { const note = document.createElement("p"); note.className = "weather-day__values weather-day__values--stale"; note.textContent = "최근 확인한 예보를 표시 중입니다."; target.appendChild(note); }
+    if (state.response.source) { const source = document.createElement("p"); source.className = "weather-day__values"; source.textContent = state.response.source === "kma_web" ? "출처: 기상청 공개 날씨누리 예보" : `출처: ${state.response.source}`; target.appendChild(source); }
     if (state.response.available_until) { const note = document.createElement("p"); note.className = "weather-day__values"; note.textContent = `예보 가능 기간: ${formatDate(state.response.available_until)}까지`; target.appendChild(note); }
     (Array.isArray(state.response.forecast) ? state.response.forecast : []).forEach((day) => {
       const card = document.createElement("article"); card.className = "weather-day"; if (day.stale) card.classList.add("weather-day--stale");
@@ -31,8 +56,9 @@
       const date = document.createElement("h3"); date.className = "weather-day__date"; date.textContent = formatDate(day.date); heading.appendChild(date);
       const condition = document.createElement("span"); condition.className = "weather-day__condition"; condition.textContent = day.condition || (day.status === "not_available_yet" ? "아직 예보 없음" : day.status === "unavailable" ? "확인 불가" : "상태 미확인"); heading.appendChild(condition); card.appendChild(heading);
       const values = document.createElement("p"); values.className = "weather-day__values";
-      values.textContent = [`기온 ${known(day.temp_min_c, (value) => `${value.toFixed(1)}°C`)} ~ ${known(day.temp_max_c, (value) => `${value.toFixed(1)}°C`)}`, `강수확률 ${known(day.precipitation_probability_pct, (value) => `${value.toFixed(0)}%`)}`, `예상 강수량 ${known(day.precipitation_mm, (value) => `${value.toFixed(1)}mm`)}`, `풍속 ${known(day.wind_speed_mps, (value) => `${value.toFixed(1)}m/s`)}`].join(" · "); card.appendChild(values);
-      if (day.stale) { const stale = document.createElement("p"); stale.className = "weather-day__values"; stale.textContent = "오래된 캐시를 표시 중입니다."; card.appendChild(stale); }
+      values.textContent = [`기온 ${known(day.temp_min_c, (value) => `${value.toFixed(1)}°C`)} ~ ${known(day.temp_max_c, (value) => `${value.toFixed(1)}°C`)}`, `강수확률 ${known(day.precipitation_probability_pct, (value) => `${value.toFixed(0)}%`)}`, `예상 강수량 ${precipitationLabel(day)}`, `풍속 ${known(day.wind_speed_mps, (value) => `${value.toFixed(1)}m/s`)}`].join(" · "); card.appendChild(values);
+      const missing = missingLabel(day); if (missing) { const note = document.createElement("p"); note.className = "weather-day__values weather-day__values--missing"; note.textContent = missing; card.appendChild(note); }
+      if (day.stale) { const stale = document.createElement("p"); stale.className = "weather-day__values weather-day__values--stale"; stale.textContent = "최근 확인한 예보입니다."; card.appendChild(stale); }
       target.appendChild(card);
     });
   }
@@ -53,7 +79,9 @@
     try {
       const response = await fetch(API_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lat: latestDestination.lat, lng: latestDestination.lng, start_date: start, end_date: end, timezone: config.weatherTimezone || "Asia/Seoul" }), signal: activeController.signal }); const payload = await response.json().catch(() => null);
       if (requestId !== state.requestId || key !== currentFingerprint()) return false; if (!response.ok || !payload || !Array.isArray(payload.forecast)) throw new Error("날씨 확인에 실패했습니다.");
-      state.response = payload; state.status = payload.status === "ok" ? "success" : "partial"; window.dispatchEvent(new CustomEvent("kto:weather-result", { detail: payload })); render(); setStatus(payload.status === "ok" ? "날씨를 확인했습니다." : "일부 날짜의 예보를 확인할 수 없습니다.", payload.status === "ok" ? "success" : "partial"); return true;
+      state.response = payload; state.status = payload.status === "ok" ? "success" : payload.status === "stale" ? "stale" : "partial"; window.dispatchEvent(new CustomEvent("kto:weather-result", { detail: payload })); render();
+      const message = payload.status === "ok" ? "날씨를 확인했습니다." : payload.status === "stale" ? "최근 확인한 예보를 표시합니다." : payload.status === "not_available_yet" ? "요청한 날짜는 아직 예보 기간이 아닙니다." : "일부 기상정보를 확인할 수 없습니다.";
+      setStatus(message, payload.status === "ok" ? "success" : payload.status === "stale" ? "stale" : "partial"); return true;
     } catch (error) { if (error && error.name === "AbortError") return false; if (requestId !== state.requestId || key !== currentFingerprint()) return false; state.status = "error"; state.error = error instanceof Error ? error.message : String(error); state.response = null; render(); setStatus(state.error, "error"); return false; }
     finally { if (requestId === state.requestId) { activeController = null; render(); } }
   }

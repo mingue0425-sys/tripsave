@@ -13,11 +13,14 @@ import httpx
 from config import WEATHER_KMA_API_KEY, WEATHER_KMA_API_URL, WEATHER_TIMEZONE
 
 from .models import DailyWeather, WeatherStatus
+from .location import _grid_coordinates
+from .parser import normalize_condition
 
 
 class WeatherProviderError(RuntimeError):
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, phase: str | None = None) -> None:
         self.code = code
+        self.phase = phase
         super().__init__(code)
 
 
@@ -38,37 +41,8 @@ class UnavailableWeatherProvider:
         del lat, lng, start_date, end_date
         raise WeatherProviderError("WEATHER_PROVIDER_UNAVAILABLE")
 
-
-def _grid_coordinates(lat: float, lng: float) -> tuple[int, int]:
-    """Convert WGS84 coordinates to the KMA Lambert grid without geocoding."""
-
-    re = 6_371.00877
-    grid = 5.0
-    slat1, slat2 = 30.0, 60.0
-    olon, olat = 126.0, 38.0
-    xo, yo = 43, 136
-    deg_to_rad = math.pi / 180.0
-    re /= grid
-    slat1 *= deg_to_rad
-    slat2 *= deg_to_rad
-    olon *= deg_to_rad
-    olat *= deg_to_rad
-    lat_rad = lat * deg_to_rad
-    lng_rad = lng * deg_to_rad
-    sn = math.log(math.cos(slat1) / math.cos(slat2)) / math.log(
-        math.tan(math.pi * 0.25 + slat2 * 0.5)
-        / math.tan(math.pi * 0.25 + slat1 * 0.5)
-    )
-    sf = math.tan(math.pi * 0.25 + slat1 * 0.5) ** sn * math.cos(slat1) / sn
-    ro = re * sf / math.tan(math.pi * 0.25 + olat * 0.5) ** sn
-    ra = re * sf / math.tan(math.pi * 0.25 + lat_rad * 0.5) ** sn
-    theta = lng_rad - olon
-    if theta > math.pi:
-        theta -= 2 * math.pi
-    if theta < -math.pi:
-        theta += 2 * math.pi
-    theta *= sn
-    return round(ra * math.sin(theta) + xo), round(ro - ra * math.cos(theta) + yo)
+    async def close(self) -> None:
+        pass
 
 
 def _condition(sky: str | None, precipitation_type: str | None) -> str | None:
@@ -76,11 +50,11 @@ def _condition(sky: str | None, precipitation_type: str | None) -> str | None:
         return "비"
     if precipitation_type in {"2", "3"}:
         return "비/눈"
-    return {"1": "맑음", "3": "구름 많음", "4": "흐림"}.get(sky)
+    return normalize_condition({"1": "맑음", "3": "구름 많음", "4": "흐림"}.get(sky))
 
 
-class KmaWeatherProvider:
-    """Short-range village forecast adapter for KMA public data."""
+class KmaApiWeatherProvider:
+    """Short-range KMA API adapter retained as the API-first provider."""
 
     name = "kma_public"
     max_forecast_days = 3
@@ -167,40 +141,104 @@ class KmaWeatherProvider:
         current = start_date
         while current <= end_date:
             values = grouped.get(current, {})
-            def numbers(category: str, day_values=values) -> list[float]:
+            def numbers(
+                category: str,
+                minimum: float | None = None,
+                maximum: float | None = None,
+                day_values=values,
+            ) -> list[float]:
                 parsed: list[float] = []
                 for raw in day_values.get(category, []):
                     try:
-                        parsed.append(float(raw))
+                        value = float(raw)
                     except ValueError:
                         continue
+                    if (
+                        not math.isfinite(value)
+                        or minimum is not None
+                        and value < minimum
+                        or maximum is not None
+                        and value > maximum
+                    ):
+                        continue
+                    parsed.append(value)
                 return parsed
 
-            temps = numbers("TMP")
-            min_temps = numbers("TMN")
-            max_temps = numbers("TMX")
-            pops = numbers("POP")
-            rain = numbers("PCP")
-            wind = numbers("WSD")
-            humidity = numbers("REH")
+            temps = numbers("TMP", -100.0, 70.0)
+            min_temps = numbers("TMN", -100.0, 70.0)
+            max_temps = numbers("TMX", -100.0, 70.0)
+            pops = numbers("POP", 0.0, 100.0)
+            rain = numbers("PCP", 0.0)
+            wind = numbers("WSD", 0.0)
+            humidity = numbers("REH", 0.0, 100.0)
             sky_values = values.get("SKY", [])
             pty_values = values.get("PTY", [])
-            condition = _condition(sky_values[-1] if sky_values else None, pty_values[-1] if pty_values else None)
-            has_data = bool(values)
+            condition = _condition(
+                sky_values[-1] if sky_values else None,
+                pty_values[-1] if pty_values else None,
+            )
+            temp_min = min_temps[-1] if min_temps else min(temps) if temps else None
+            temp_max = max_temps[-1] if max_temps else max(temps) if temps else None
+            if temp_min is not None and temp_max is not None and temp_min > temp_max:
+                raise WeatherProviderError("WEATHER_PARSE_FAILED")
+            precipitation_mm = sum(value for value in rain if value >= 0) if rain else None
+            known_values = {
+                "condition": condition,
+                "temp_min_c": temp_min,
+                "temp_max_c": temp_max,
+                "precipitation_probability_pct": max(pops) if pops else None,
+                "precipitation": precipitation_mm is not None,
+                "wind_speed_mps": max(wind) if wind else None,
+            }
+            known_fields = [
+                name
+                for name, value in known_values.items()
+                if value is not None and value is not False
+            ]
+            missing_fields = [name for name in known_values if name not in known_fields]
             result.append(
                 DailyWeather(
                     date=current,
                     condition=condition,
-                    temp_min_c=min_temps[-1] if min_temps else min(temps) if temps else None,
-                    temp_max_c=max_temps[-1] if max_temps else max(temps) if temps else None,
+                    raw_condition=condition,
+                    normalized_condition=condition,
+                    temp_min_c=temp_min,
+                    temp_max_c=temp_max,
                     precipitation_probability_pct=max(pops) if pops else None,
-                    precipitation_mm=sum(value for value in rain if value >= 0) if rain else None,
+                    precipitation_mm=precipitation_mm,
                     wind_speed_mps=max(wind) if wind else None,
                     humidity_pct=sum(humidity) / len(humidity) if humidity else None,
                     source=self.name,
+                    source_url=WEATHER_KMA_API_URL,
+                    known_fields=known_fields,
+                    missing_fields=missing_fields,
+                    completeness_pct=round(len(known_fields) / len(known_values) * 100.0, 1),
                     fetched_at=fetched_at,
-                    status=WeatherStatus.OK if has_data else WeatherStatus.PARTIAL,
+                    status=(
+                        WeatherStatus.OK
+                        if not missing_fields
+                        else WeatherStatus.PARTIAL
+                    ),
                 )
             )
             current += timedelta(days=1)
         return result
+
+    async def close(self) -> None:
+        # API requests use a short-lived client for compatibility with the
+        # existing adapter; there is no persistent resource to release.
+        pass
+
+
+# Backwards-compatible import name used by existing integrations.
+KmaWeatherProvider = KmaApiWeatherProvider
+
+
+__all__ = [
+    "KmaApiWeatherProvider",
+    "KmaWeatherProvider",
+    "UnavailableWeatherProvider",
+    "WeatherProvider",
+    "WeatherProviderError",
+    "_grid_coordinates",
+]

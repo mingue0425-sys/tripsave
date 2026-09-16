@@ -14,6 +14,7 @@ class WeatherCacheEntry:
     payload: list[dict[str, object]]
     fetched_at: datetime
     fresh: bool
+    provider: str = ""
 
 
 class WeatherCache:
@@ -34,6 +35,12 @@ class WeatherCache:
         connection.execute("PRAGMA journal_mode = WAL")
         return connection
 
+    @staticmethod
+    def _utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
     def _ensure_schema(self) -> None:
         with self._connect() as connection:
             connection.execute(
@@ -49,22 +56,31 @@ class WeatherCache:
             )
 
     def get(self, cache_key: str, *, now: datetime | None = None) -> WeatherCacheEntry | None:
-        reference = now or datetime.now(timezone.utc)
+        reference = self._utc(now or datetime.now(timezone.utc))
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT payload_json, fetched_at, expires_at FROM weather_cache WHERE cache_key = ?",
+                "SELECT provider, payload_json, fetched_at, expires_at FROM weather_cache WHERE cache_key = ?",
                 (cache_key,),
             ).fetchone()
         if row is None:
             return None
-        fetched_at = datetime.fromisoformat(row["fetched_at"])
-        expires_at = datetime.fromisoformat(row["expires_at"])
+        try:
+            fetched_at = self._utc(datetime.fromisoformat(row["fetched_at"]))
+            expires_at = self._utc(datetime.fromisoformat(row["expires_at"]))
+            payload = json.loads(row["payload_json"])
+        except (TypeError, ValueError):
+            # A damaged cache entry must degrade to a live fetch, never to a
+            # weather endpoint error.
+            return None
+        if not isinstance(payload, list):
+            return None
         if reference > expires_at + timedelta(seconds=self.stale_max_age_s):
             return None
         return WeatherCacheEntry(
-            payload=json.loads(row["payload_json"]),
+            payload=payload,
             fetched_at=fetched_at,
             fresh=reference <= expires_at,
+            provider=row["provider"],
         )
 
     def put(
@@ -75,6 +91,7 @@ class WeatherCache:
         payload: list[dict[str, object]],
         fetched_at: datetime,
     ) -> None:
+        fetched_at = self._utc(fetched_at)
         expires_at = fetched_at + timedelta(seconds=self.ttl_s)
         with self._connect() as connection:
             connection.execute(

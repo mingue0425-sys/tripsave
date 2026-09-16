@@ -76,8 +76,8 @@ from backend.trips.candidate_sets import (
     CandidateSetStore,
 )
 from backend.weather import (
-    KmaWeatherProvider,
-    UnavailableWeatherProvider,
+    KmaApiWeatherProvider,
+    KmaWebWeatherProvider,
     WeatherCache,
     WeatherService,
 )
@@ -110,7 +110,9 @@ from config import (
     TRIP_CANDIDATES_API_URL,
     WEATHER_CACHE_DB,
     WEATHER_CACHE_TTL_S,
+    WEATHER_API_WEB_FALLBACK,
     WEATHER_KMA_API_KEY,
+    WEATHER_KMA_WEB_FALLBACK_ENABLED,
     WEATHER_STALE_MAX_AGE_S,
     map_config,
 )
@@ -145,17 +147,31 @@ candidate_set_store = CandidateSetStore(
 poi_repository = PoiRepository(POI_INDEX_DB)
 poi_service = PoiService(poi_repository)
 itinerary_service = ItineraryService(routing_client)
-weather_provider = (
-    KmaWeatherProvider(api_key=WEATHER_KMA_API_KEY)
-    if WEATHER_KMA_API_KEY
-    else UnavailableWeatherProvider()
-)
+weather_web_provider = None
+if WEATHER_KMA_API_KEY:
+    weather_provider = KmaApiWeatherProvider(api_key=WEATHER_KMA_API_KEY)
+    if WEATHER_API_WEB_FALLBACK:
+        weather_web_provider = KmaWebWeatherProvider(
+            browser_fallback_enabled=WEATHER_KMA_WEB_FALLBACK_ENABLED,
+        )
+else:
+    # A missing API key selects the official public HTML provider.  Its
+    # browser is lazy and is only started when the HTTP HTML path is
+    # insufficient, so importing the app does not launch Chromium.
+    weather_provider = KmaWebWeatherProvider(
+        browser_fallback_enabled=WEATHER_KMA_WEB_FALLBACK_ENABLED,
+    )
 weather_cache = WeatherCache(
     WEATHER_CACHE_DB,
     ttl_s=WEATHER_CACHE_TTL_S,
     stale_max_age_s=WEATHER_STALE_MAX_AGE_S,
 )
-weather_service = WeatherService(weather_provider, weather_cache)
+weather_service = WeatherService(
+    weather_provider,
+    weather_cache,
+    fallback_provider=weather_web_provider,
+    debug=TOLL_DEBUG_MODE,
+)
 
 
 @asynccontextmanager
@@ -177,6 +193,14 @@ async def lifespan(_app: FastAPI):
         candidate_set_store.close()
         entity_repository.close()
         poi_service.close()
+        closed: set[int] = set()
+        for provider in (weather_provider, weather_web_provider):
+            if provider is None or id(provider) in closed:
+                continue
+            close = getattr(provider, "close", None)
+            if close is not None:
+                await close()
+            closed.add(id(provider))
         weather_cache.close()
 
 
