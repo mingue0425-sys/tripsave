@@ -7,33 +7,19 @@
     <title>Korea Trip Optimizer</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="stylesheet" href="/static/vendor/maplibre-gl/maplibre-gl.css">
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260916f">
     <link rel="stylesheet" href="/static/css/accommodation.css">
     <link rel="stylesheet" href="/static/css/places.css">
     <link rel="stylesheet" href="/static/css/trips.css">
     <link rel="stylesheet" href="/static/css/recommendations.css">
-    <link rel="stylesheet" href="/static/css/poi.css">
+    <link rel="stylesheet" href="/static/css/poi.css?v=20260916f">
     <link rel="stylesheet" href="/static/css/itinerary.css">
     <link rel="stylesheet" href="/static/css/weather.css">
   </head>
   <body data-map-available="true">
     <div class="app-shell">
-      <header class="app-header">
-        <div>
-            <p class="eyebrow">V1.1 · MAP POI · MULTI-STOP · WEATHER</p>
-          <h1>Korea Trip Optimizer</h1>
-        </div>
-        <span class="version-badge">{{ app_version }}</span>
-      </header>
-
       <main class="workspace" aria-label="여행 위치 선택 화면">
-        <aside class="trip-panel" aria-labelledby="trip-panel-title">
-          <div class="panel-heading">
-            <p class="eyebrow">TRIP SETUP</p>
-            <h2 id="trip-panel-title">여행 설정</h2>
-            <p class="panel-help">지도에서 위치를 클릭하거나 작은 도시 목록을 검색하세요.</p>
-          </div>
-
+        <aside class="trip-panel" aria-label="여행 설정">
           <section class="location-card" id="origin-card" data-slot="origin">
             <div class="location-card-heading">
               <span class="location-letter location-letter--origin" aria-hidden="true">A</span>
@@ -98,24 +84,7 @@
             </div>
           </section>
 
-          {% include "components/accommodation.html" %}
-          {% include "components/places.html" %}
-          {% include "components/trips.html" %}
-          {% include "components/recommendations.html" %}
-          {% include "components/poi.html" %}
-          {% include "components/itinerary.html" %}
-          {% include "components/weather.html" %}
-
-          <div class="panel-actions">
-            <button id="swap-button" class="button button--secondary" type="button" disabled>
-              <span aria-hidden="true">A ↔ B</span> 위치 교환
-            </button>
-            <button id="clear-button" class="button button--quiet" type="button">
-              전체 초기화
-            </button>
-          </div>
-
-          <section class="route-panel" aria-labelledby="route-panel-title">
+<section class="route-panel" aria-labelledby="route-panel-title">
             <div class="route-panel-heading">
               <p class="location-kicker">DRIVING ROUTE</p>
               <h2 id="route-panel-title">자동차 경로</h2>
@@ -211,48 +180,6 @@
               <p id="fuel-status" class="fuel-status" role="status" aria-live="polite">
                 경로 계산 후 연료 종류와 실제 연비를 입력하세요.
               </p>
-
-              <section class="driving-cost-panel" aria-labelledby="driving-cost-title">
-                <div class="driving-cost-heading">
-                  <p class="location-kicker">TOTAL DRIVING COST</p>
-                  <h3 id="driving-cost-title">자동차 이동비</h3>
-                </div>
-                <dl id="driving-cost-metrics" class="driving-cost-metrics" hidden>
-                  <div class="cost-leg">
-                    <dt>가는 길</dt>
-                    <dd id="cost-outbound-distance">—</dd>
-                    <dt>유류비</dt>
-                    <dd id="cost-outbound-fuel">—</dd>
-                    <dt>통행료</dt>
-                    <dd id="cost-outbound-toll">—</dd>
-                    <dt>합계</dt>
-                    <dd id="cost-outbound-total">—</dd>
-                  </div>
-                  <div class="cost-leg">
-                    <dt>오는 길</dt>
-                    <dd id="cost-return-distance">—</dd>
-                    <dt>유류비</dt>
-                    <dd id="cost-return-fuel">—</dd>
-                    <dt>통행료</dt>
-                    <dd id="cost-return-toll">—</dd>
-                    <dt>합계</dt>
-                    <dd id="cost-return-total">—</dd>
-                  </div>
-                  <div class="cost-leg cost-leg--aggregate">
-                    <dt>왕복 합계</dt>
-                    <dd id="cost-round-trip-distance">—</dd>
-                    <dt>유류비</dt>
-                    <dd id="cost-round-trip-fuel">—</dd>
-                    <dt>통행료</dt>
-                    <dd id="cost-round-trip-toll">—</dd>
-                    <dt>합계</dt>
-                    <dd id="cost-round-trip-total">—</dd>
-                  </div>
-                </dl>
-                <p id="driving-cost-status" class="driving-cost-status" role="status" aria-live="polite">
-                  통행료와 유가를 확인하면 이동비를 계산합니다.
-                </p>
-              </section>
             </section>
 
             <section class="toll-panel" aria-labelledby="toll-panel-title">
@@ -299,8 +226,68 @@
                 <pre id="toll-debug"></pre>
               </details>
             </section>
+
+<section class="driving-cost-panel" aria-labelledby="driving-cost-title">
+                <div class="driving-cost-heading">
+                  <p class="location-kicker">TOTAL DRIVING COST</p>
+                  <h3 id="driving-cost-title">자동차 이동비</h3>
+                </div>
+                <dl id="driving-cost-metrics" class="driving-cost-metrics" hidden>
+                  <div class="cost-leg">
+                    <dt>가는 길</dt>
+                    <dd id="cost-outbound-distance">—</dd>
+                    <dt>유류비</dt>
+                    <dd id="cost-outbound-fuel">—</dd>
+                    <dt>통행료</dt>
+                    <dd id="cost-outbound-toll">—</dd>
+                    <dt>합계</dt>
+                    <dd id="cost-outbound-total">—</dd>
+                  </div>
+                  <div class="cost-leg">
+                    <dt>오는 길</dt>
+                    <dd id="cost-return-distance">—</dd>
+                    <dt>유류비</dt>
+                    <dd id="cost-return-fuel">—</dd>
+                    <dt>통행료</dt>
+                    <dd id="cost-return-toll">—</dd>
+                    <dt>합계</dt>
+                    <dd id="cost-return-total">—</dd>
+                  </div>
+                  <div class="cost-leg cost-leg--aggregate">
+                    <dt>왕복 합계</dt>
+                    <dd id="cost-round-trip-distance">—</dd>
+                    <dt>유류비</dt>
+                    <dd id="cost-round-trip-fuel">—</dd>
+                    <dt>통행료</dt>
+                    <dd id="cost-round-trip-toll">—</dd>
+                    <dt>합계</dt>
+                    <dd id="cost-round-trip-total">—</dd>
+                  </div>
+                </dl>
+                <p id="driving-cost-status" class="driving-cost-status" role="status" aria-live="polite">
+                  통행료와 유가를 확인하면 이동비를 계산합니다.
+                </p>
+              </section>
+
           </section>
 
+
+          {% include "components/accommodation.html" %}
+          {% include "components/places.html" %}
+          {% include "components/trips.html" %}
+          {% include "components/recommendations.html" %}
+          {% include "components/poi.html" %}
+          {% include "components/itinerary.html" %}
+          {% include "components/weather.html" %}
+
+          <div class="panel-actions">
+            <button id="swap-button" class="button button--secondary" type="button" disabled>
+              <span aria-hidden="true">A ↔ B</span> 위치 교환
+            </button>
+            <button id="clear-button" class="button button--quiet" type="button">
+              전체 초기화
+            </button>
+          </div>
           <div class="selection-status-block">
             <p class="status-label">상태</p>
             <p id="selection-status" class="selection-status" role="status" aria-live="polite">
@@ -333,6 +320,9 @@
             <span><i class="legend-marker legend-marker--accommodation">H</i>숙소</span>
             <span><i class="legend-marker legend-marker--restaurant">R</i>맛집</span>
             <span><i class="legend-marker legend-marker--attraction">A</i>관광지</span>
+            <span><i class="legend-weather legend-weather--clear" aria-hidden="true">☀</i>맑음</span>
+            <span><i class="legend-weather legend-weather--cloudy" aria-hidden="true">☁</i>구름</span>
+            <span><i class="legend-weather legend-weather--rain" aria-hidden="true">↘</i>비</span>
           </div>
         </section>
       </main>
@@ -351,22 +341,23 @@
     <script src="/static/js/map.js" defer></script>
     <script src="/static/js/storage.js" defer></script>
     <script src="/static/js/markers.js" defer></script>
-    <script src="/static/js/selection.js" defer></script>
+    <script src="/static/js/selection.js?v=20260916f" defer></script>
     <script src="/static/js/search.js" defer></script>
     <script src="/static/js/place_layers.js" defer></script>
     <script src="/static/js/route_format.js" defer></script>
-    <script src="/static/js/route_layer.js" defer></script>
-    <script src="/static/js/route.js" defer></script>
+    <script src="/static/js/route_layer.js?v=20260916f" defer></script>
+    <script src="/static/js/route.js?v=20260916f" defer></script>
     <script src="/static/js/toll_markers.js" defer></script>
-    <script src="/static/js/toll.js" defer></script>
+    <script src="/static/js/toll.js?v=20260916f" defer></script>
     <script src="/static/js/cost.js" defer></script>
     <script src="/static/js/accommodation.js" defer></script>
     <script src="/static/js/places.js" defer></script>
     <script src="/static/js/trips.js" defer></script>
     <script src="/static/js/recommendations.js" defer></script>
-    <script src="/static/js/poi.js" defer></script>
+    <script src="/static/js/poi.js?v=20260916f" defer></script>
     <script src="/static/js/itinerary_route_layer.js" defer></script>
     <script src="/static/js/itinerary.js" defer></script>
     <script src="/static/js/weather.js" defer></script>
+    <script src="/static/js/weather_layer.js" defer></script>
   </body>
 </html>

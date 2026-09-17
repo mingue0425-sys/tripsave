@@ -3,90 +3,414 @@
 
   const config = window.KTO_CONFIG || {};
   const API_URL = config.weatherApiUrl || "/api/weather/forecast";
-  const state = { status: "idle", response: null, error: null, requestId: 0 };
+  const TIMEZONE = config.weatherTimezone || "Asia/Seoul";
+  const WEATHER_SLOTS = Object.freeze(["origin", "destination"]);
+  const CLIENT_CACHE_LIMIT = 16;
+  const state = {
+    status: "idle",
+    responses: { origin: null, destination: null },
+    errors: { origin: null, destination: null },
+    response: null,
+    error: null,
+    requestId: 0,
+    startDate: "",
+    endDate: "",
+  };
   let activeController = null;
-  let latestDestination = null;
+  let latestSelection = { origin: null, destination: null };
+  const responseCache = new Map();
+  const inFlightRequests = new Map();
 
-  function element(id) { return document.getElementById(id); }
-  function destination() { const api = window.KoreaTripSelection; return api && typeof api.getDestination === "function" ? api.getDestination() : null; }
-  function dateValue(id) { return element(id)?.value || ""; }
-  function dateKey() { return `${dateValue("weather-start-date")}|${dateValue("weather-end-date")}`; }
+  function element(id) {
+    return document.getElementById(id);
+  }
+
+  function selection() {
+    const api = window.KoreaTripSelection;
+    if (!api) {
+      return { origin: null, destination: null };
+    }
+    return {
+      origin: typeof api.getOrigin === "function" ? api.getOrigin() : null,
+      destination:
+        typeof api.getDestination === "function" ? api.getDestination() : null,
+    };
+  }
+
+  function dateValue(id) {
+    return element(id)?.value || "";
+  }
+
+  function dateKey(start = dateValue("weather-start-date"), end = dateValue("weather-end-date")) {
+    return `${start}|${end}`;
+  }
+
+  function locationFingerprint(location) {
+    if (!location || !Number.isFinite(location.lat) || !Number.isFinite(location.lng)) {
+      return "none";
+    }
+    return `${location.lat}|${location.lng}`;
+  }
+
+  function selectionFingerprint(value = latestSelection, dates = dateKey()) {
+    return `${locationFingerprint(value.origin)}::${locationFingerprint(value.destination)}|${dates}`;
+  }
+
+  function requestKey(location, start, end) {
+    return `${locationFingerprint(location)}|${start}|${end}|${TIMEZONE}`;
+  }
+
   function setStatus(message, type) {
     const target = element("weather-status");
-    if (!target) return;
+    if (!target) {
+      return;
+    }
     target.textContent = message;
     target.classList.toggle("weather-status--error", type === "error");
     target.classList.toggle("weather-status--success", type === "success");
     target.classList.toggle("weather-status--partial", type === "partial");
     target.classList.toggle("weather-status--stale", type === "stale");
   }
-  function currentFingerprint() { return `${latestDestination ? `${latestDestination.lat}|${latestDestination.lng}|${latestDestination.label || latestDestination.name || ""}` : "none"}|${dateKey()}`; }
-  function known(value, formatter) { return value === null || value === undefined || !Number.isFinite(Number(value)) ? "확인 불가" : formatter(Number(value)); }
-  function formatDate(value) { if (typeof value !== "string") return "날짜 미확인"; const date = new Date(`${value}T00:00:00+09:00`); return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("ko-KR", { timeZone: config.weatherTimezone || "Asia/Seoul", month: "long", day: "numeric", weekday: "short" }); }
-  function precipitationLabel(day) {
-    if (typeof day.precipitation_text === "string" && day.precipitation_text.trim()) return day.precipitation_text;
-    if (day.precipitation_mm !== null && day.precipitation_mm !== undefined) return known(day.precipitation_mm, (value) => `${value.toFixed(1)}mm`);
-    const lower = day.precipitation_min_mm === null || day.precipitation_min_mm === undefined ? null : Number(day.precipitation_min_mm);
-    const upper = day.precipitation_max_mm === null || day.precipitation_max_mm === undefined ? null : Number(day.precipitation_max_mm);
-    if (Number.isFinite(lower) && Number.isFinite(upper)) return `${lower.toFixed(1)}~${upper.toFixed(1)}mm`;
-    if (Number.isFinite(upper)) return `최대 ${upper.toFixed(1)}mm`;
-    return known(day.precipitation_mm, (value) => `${value.toFixed(1)}mm`);
-  }
-  function missingLabel(day) {
-    if (!Array.isArray(day.missing_fields) || !day.missing_fields.length) return "";
-    const labels = { condition: "날씨", temp_min_c: "최저기온", temp_max_c: "최고기온", precipitation_probability_pct: "강수확률", precipitation: "강수량", wind_speed_mps: "풍속" };
-    const names = day.missing_fields.map((field) => labels[field] || field).filter(Boolean);
-    return names.length ? `확인 불가: ${names.join(", ")}` : "";
-  }
+
   function render() {
-    const button = element("weather-search"); const summary = element("weather-summary"); if (!button || !summary) return;
-    button.disabled = !latestDestination || !dateValue("weather-start-date") || !dateValue("weather-end-date") || state.status === "loading";
-    button.textContent = state.status === "loading" ? "날씨 확인 중…" : "날씨 확인";
-    summary.textContent = latestDestination ? `${latestDestination.name || latestDestination.label || "선택한 목적지"}의 날짜별 기상정보를 표시합니다.` : "목적지와 여행 날짜를 선택하면 예보를 확인합니다.";
-    renderResults();
+    const button = element("weather-search");
+    const summary = element("weather-summary");
+    if (button) {
+      button.disabled =
+        !latestSelection.origin ||
+        !latestSelection.destination ||
+        !state.startDate ||
+        !state.endDate ||
+        state.status === "loading";
+      button.textContent = state.status === "loading" ? "날씨 확인 중…" : "날씨 다시 확인";
+    }
+    if (summary) {
+      if (!latestSelection.origin || !latestSelection.destination) {
+        summary.textContent = "출발지와 목적지를 선택하면 지도 위에 날씨를 표시합니다.";
+      } else if (state.status === "loading") {
+        summary.textContent = "출발지와 목적지의 날씨를 지도에 표시하는 중입니다.";
+      } else {
+        summary.textContent = "지도 위 날씨 marker를 클릭하면 상세 예보를 확인할 수 있습니다.";
+      }
+    }
   }
-  function renderResults() {
-    const target = element("weather-results"); if (!target) return; target.replaceChildren(); if (!state.response) return;
-    if (state.response.stale || state.response.status === "stale") { const note = document.createElement("p"); note.className = "weather-day__values weather-day__values--stale"; note.textContent = "최근 확인한 예보를 표시 중입니다."; target.appendChild(note); }
-    if (state.response.source) { const source = document.createElement("p"); source.className = "weather-day__values"; source.textContent = state.response.source === "kma_web" ? "출처: 기상청 공개 날씨누리 예보" : `출처: ${state.response.source}`; target.appendChild(source); }
-    if (state.response.available_until) { const note = document.createElement("p"); note.className = "weather-day__values"; note.textContent = `예보 가능 기간: ${formatDate(state.response.available_until)}까지`; target.appendChild(note); }
-    (Array.isArray(state.response.forecast) ? state.response.forecast : []).forEach((day) => {
-      const card = document.createElement("article"); card.className = "weather-day"; if (day.stale) card.classList.add("weather-day--stale");
-      const heading = document.createElement("div"); heading.className = "weather-day__heading";
-      const date = document.createElement("h3"); date.className = "weather-day__date"; date.textContent = formatDate(day.date); heading.appendChild(date);
-      const condition = document.createElement("span"); condition.className = "weather-day__condition"; condition.textContent = day.condition || (day.status === "not_available_yet" ? "아직 예보 없음" : day.status === "unavailable" ? "확인 불가" : "상태 미확인"); heading.appendChild(condition); card.appendChild(heading);
-      const values = document.createElement("p"); values.className = "weather-day__values";
-      values.textContent = [`기온 ${known(day.temp_min_c, (value) => `${value.toFixed(1)}°C`)} ~ ${known(day.temp_max_c, (value) => `${value.toFixed(1)}°C`)}`, `강수확률 ${known(day.precipitation_probability_pct, (value) => `${value.toFixed(0)}%`)}`, `예상 강수량 ${precipitationLabel(day)}`, `풍속 ${known(day.wind_speed_mps, (value) => `${value.toFixed(1)}m/s`)}`].join(" · "); card.appendChild(values);
-      const missing = missingLabel(day); if (missing) { const note = document.createElement("p"); note.className = "weather-day__values weather-day__values--missing"; note.textContent = missing; card.appendChild(note); }
-      if (day.stale) { const stale = document.createElement("p"); stale.className = "weather-day__values weather-day__values--stale"; stale.textContent = "최근 확인한 예보입니다."; card.appendChild(stale); }
-      target.appendChild(card);
-    });
+
+  function validDateRange(start, end) {
+    return Boolean(start && end && end >= start);
   }
+
+  function localDateValue(value) {
+    return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+  }
+
   function setDefaultDates() {
-    const accommodationStart = element("accommodation-checkin")?.value || ""; const accommodationEnd = element("accommodation-checkout")?.value || "";
-    const start = element("weather-start-date"); const end = element("weather-end-date"); if (!start || !end) return;
-    if (accommodationStart) start.value = accommodationStart;
-    if (accommodationEnd) end.value = accommodationEnd;
-    const localDateValue = (value) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
-    if (!start.value) { const today = new Date(); today.setDate(today.getDate() + 1); start.value = localDateValue(today); }
-    if (!end.value) { const date = new Date(`${start.value}T00:00:00`); date.setDate(date.getDate() + 2); end.value = localDateValue(date); }
+    const accommodationStart = element("accommodation-checkin")?.value || "";
+    const accommodationEnd = element("accommodation-checkout")?.value || "";
+    const start = element("weather-start-date");
+    const end = element("weather-end-date");
+    if (!start || !end) {
+      return;
+    }
+    if (accommodationStart) {
+      start.value = accommodationStart;
+    }
+    if (accommodationEnd) {
+      end.value = accommodationEnd;
+    }
+    if (!start.value) {
+      const today = new Date();
+      today.setDate(today.getDate() + 1);
+      start.value = localDateValue(today);
+    }
+    if (!end.value) {
+      const date = new Date(`${start.value}T00:00:00`);
+      date.setDate(date.getDate() + 2);
+      end.value = localDateValue(date);
+    }
+    state.startDate = start.value;
+    state.endDate = end.value;
   }
-  function clear(message) { state.requestId += 1; if (activeController) activeController.abort(); activeController = null; state.status = "idle"; state.response = null; state.error = null; if (message) setStatus(message, "active"); render(); }
+
+  function cacheResponse(key, payload) {
+    responseCache.delete(key);
+    responseCache.set(key, payload);
+    while (responseCache.size > CLIENT_CACHE_LIMIT) {
+      responseCache.delete(responseCache.keys().next().value);
+    }
+  }
+
+  function fetchLocationWeather(location, start, end, signal) {
+    const key = requestKey(location, start, end);
+    if (responseCache.has(key)) {
+      return Promise.resolve(responseCache.get(key));
+    }
+    const existing = inFlightRequests.get(key);
+    if (existing && existing.signal === signal && !signal.aborted) {
+      return existing.promise;
+    }
+    const request = fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lat: location.lat,
+        lng: location.lng,
+        start_date: start,
+        end_date: end,
+        timezone: TIMEZONE,
+      }),
+      signal,
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload || !Array.isArray(payload.forecast)) {
+          throw new Error("날씨 확인에 실패했습니다.");
+        }
+        cacheResponse(key, payload);
+        return payload;
+      })
+      .finally(() => {
+        if (inFlightRequests.get(key)?.promise === request) {
+          inFlightRequests.delete(key);
+        }
+      });
+    inFlightRequests.set(key, { promise: request, signal });
+    return request;
+  }
+
+  function stateDetail() {
+    return {
+      status: state.status,
+      responses: {
+        origin: state.responses.origin,
+        destination: state.responses.destination,
+      },
+      errors: {
+        origin: state.errors.origin,
+        destination: state.errors.destination,
+      },
+      locations: {
+        origin: latestSelection.origin,
+        destination: latestSelection.destination,
+      },
+      startDate: state.startDate,
+      endDate: state.endDate,
+      forecastDate: state.startDate,
+      requestId: state.requestId,
+      fingerprint: selectionFingerprint(latestSelection, dateKey(state.startDate, state.endDate)),
+    };
+  }
+
+  function publish(eventName = "kto:weather-state") {
+    window.dispatchEvent(new CustomEvent(eventName, { detail: stateDetail() }));
+  }
+
+  function clear(message) {
+    state.requestId += 1;
+    if (activeController) {
+      activeController.abort();
+    }
+    activeController = null;
+    state.status = "idle";
+    state.responses = { origin: null, destination: null };
+    state.errors = { origin: null, destination: null };
+    state.response = null;
+    state.error = null;
+    publish();
+    render();
+    if (message) {
+      setStatus(message, "active");
+    }
+  }
+
+  function aggregateStatus(responses, errors) {
+    const loaded = WEATHER_SLOTS.filter((slot) => responses[slot]);
+    const failed = WEATHER_SLOTS.filter((slot) => errors[slot]);
+    if (!loaded.length && failed.length) {
+      return "error";
+    }
+    if (failed.length || loaded.length !== WEATHER_SLOTS.length) {
+      return "partial";
+    }
+    if (loaded.some((slot) => responses[slot].status === "stale" || responses[slot].stale)) {
+      return "stale";
+    }
+    if (loaded.every((slot) => responses[slot].status === "ok")) {
+      return "success";
+    }
+    return "partial";
+  }
+
+  function errorMessage(error) {
+    if (error instanceof Error && error.message) {
+      return error.message;
+    }
+    return String(error || "날씨를 확인하지 못했습니다.");
+  }
+
   async function search() {
-    if (!latestDestination) { setStatus("목적지를 먼저 선택해 주세요.", "error"); return false; }
-    const start = dateValue("weather-start-date"); const end = dateValue("weather-end-date"); if (!start || !end || end < start) { setStatus("날짜 범위를 올바르게 입력해 주세요.", "error"); return false; }
-    if (activeController) activeController.abort(); const requestId = ++state.requestId; const key = currentFingerprint(); activeController = new AbortController(); state.status = "loading"; state.response = null; render(); setStatus("공개 기상 provider에서 예보를 확인하고 있습니다.", "active");
-    try {
-      const response = await fetch(API_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lat: latestDestination.lat, lng: latestDestination.lng, start_date: start, end_date: end, timezone: config.weatherTimezone || "Asia/Seoul" }), signal: activeController.signal }); const payload = await response.json().catch(() => null);
-      if (requestId !== state.requestId || key !== currentFingerprint()) return false; if (!response.ok || !payload || !Array.isArray(payload.forecast)) throw new Error("날씨 확인에 실패했습니다.");
-      state.response = payload; state.status = payload.status === "ok" ? "success" : payload.status === "stale" ? "stale" : "partial"; window.dispatchEvent(new CustomEvent("kto:weather-result", { detail: payload })); render();
-      const message = payload.status === "ok" ? "날씨를 확인했습니다." : payload.status === "stale" ? "최근 확인한 예보를 표시합니다." : payload.status === "not_available_yet" ? "요청한 날짜는 아직 예보 기간이 아닙니다." : "일부 기상정보를 확인할 수 없습니다.";
-      setStatus(message, payload.status === "ok" ? "success" : payload.status === "stale" ? "stale" : "partial"); return true;
-    } catch (error) { if (error && error.name === "AbortError") return false; if (requestId !== state.requestId || key !== currentFingerprint()) return false; state.status = "error"; state.error = error instanceof Error ? error.message : String(error); state.response = null; render(); setStatus(state.error, "error"); return false; }
-    finally { if (requestId === state.requestId) { activeController = null; render(); } }
+    const nextSelection = selection();
+    latestSelection = {
+      origin: nextSelection.origin || null,
+      destination: nextSelection.destination || null,
+    };
+    const start = dateValue("weather-start-date") || state.startDate;
+    const end = dateValue("weather-end-date") || state.endDate;
+    state.startDate = start;
+    state.endDate = end;
+    if (!latestSelection.origin || !latestSelection.destination) {
+      setStatus("출발지와 목적지를 먼저 선택해 주세요.", "error");
+      render();
+      return false;
+    }
+    if (!validDateRange(start, end)) {
+      setStatus("날짜 범위를 올바르게 입력해 주세요.", "error");
+      render();
+      return false;
+    }
+
+    if (activeController) {
+      activeController.abort();
+    }
+    const requestId = ++state.requestId;
+    const fingerprint = selectionFingerprint(latestSelection, dateKey(start, end));
+    activeController = new AbortController();
+    state.status = "loading";
+    state.responses = { origin: null, destination: null };
+    state.errors = { origin: null, destination: null };
+    state.response = null;
+    state.error = null;
+    render();
+    publish();
+    setStatus("출발지와 목적지의 예보를 확인하고 있습니다.", "active");
+
+    const results = await Promise.all(
+      WEATHER_SLOTS.map(async (slot) => {
+        try {
+          const payload = await fetchLocationWeather(
+            latestSelection[slot],
+            start,
+            end,
+            activeController.signal,
+          );
+          return { slot, payload, error: null };
+        } catch (error) {
+          return { slot, payload: null, error };
+        }
+      }),
+    );
+
+    if (
+      requestId !== state.requestId ||
+      fingerprint !== selectionFingerprint(selection(), dateKey())
+    ) {
+      return false;
+    }
+
+    const responses = { origin: null, destination: null };
+    const errors = { origin: null, destination: null };
+    results.forEach(({ slot, payload, error }) => {
+      responses[slot] = payload;
+      errors[slot] = error ? errorMessage(error) : null;
+    });
+    state.responses = responses;
+    state.errors = errors;
+    state.response = responses.destination;
+    state.error = errors.origin || errors.destination || null;
+    state.status = aggregateStatus(responses, errors);
+    publish("kto:weather-state");
+    publish("kto:weather-result");
+    render();
+    if (state.status === "success") {
+      setStatus("출발지와 목적지의 날씨를 지도에 표시했습니다.", "success");
+    } else if (state.status === "stale") {
+      setStatus("최근 확인한 예보를 지도에 표시했습니다.", "stale");
+    } else if (state.status === "partial") {
+      setStatus("일부 날씨를 확인하지 못했습니다. 지도에서 확인 가능한 위치만 표시합니다.", "partial");
+    } else {
+      setStatus("날씨를 확인하지 못했습니다. 지도의 경로와 다른 기능은 계속 사용할 수 있습니다.", "error");
+    }
+    if (requestId === state.requestId) {
+      activeController = null;
+      render();
+    }
+    return state.status !== "error";
   }
-  function handleSelectionChanged(event) { const next = event && event.detail ? event.detail.destination || null : destination(); const changed = currentFingerprint().split("|").slice(0, 2).join("|") !== (next ? `${next.lat}|${next.lng}` : "none"); latestDestination = next; if (changed && (state.response || state.status === "loading")) clear("목적지가 변경되어 날씨를 초기화했습니다."); else render(); }
+
+  function handleSelectionChanged(event) {
+    const next = event && event.detail ? event.detail : selection();
+    const nextSelection = {
+      origin: next.origin || null,
+      destination: next.destination || null,
+    };
+    const changed =
+      locationFingerprint(nextSelection.origin) !== locationFingerprint(latestSelection.origin) ||
+      locationFingerprint(nextSelection.destination) !== locationFingerprint(latestSelection.destination);
+    latestSelection = nextSelection;
+    if (!changed) {
+      render();
+      return;
+    }
+    if (!latestSelection.origin || !latestSelection.destination) {
+      clear("출발지와 목적지를 모두 선택하면 지도에 날씨를 표시합니다.");
+      return;
+    }
+    if (validDateRange(dateValue("weather-start-date"), dateValue("weather-end-date"))) {
+      void search();
+    } else {
+      clear("날씨 날짜를 준비하는 중입니다.");
+    }
+  }
+
   window.addEventListener("kto:selection-changed", handleSelectionChanged);
-  window.KoreaTripWeather = Object.freeze({ search, clear: () => clear("날씨 결과를 초기화했습니다."), getState: () => ({ status: state.status, response: state.response, error: state.error }), getForDate: (value) => state.response?.forecast?.find((day) => day.date === value) || null });
-  document.addEventListener("DOMContentLoaded", () => { latestDestination = destination(); setDefaultDates(); ["weather-start-date", "weather-end-date"].forEach((id) => element(id)?.addEventListener("change", () => { if (state.response || state.status === "loading") clear("날짜가 변경되어 날씨를 초기화했습니다."); else render(); })); ["accommodation-checkin", "accommodation-checkout"].forEach((id) => element(id)?.addEventListener("change", () => { if (!state.response && state.status !== "loading") { setDefaultDates(); render(); } })); element("weather-search")?.addEventListener("click", search); render(); });
+
+  window.KoreaTripWeather = Object.freeze({
+    search,
+    clear: () => clear("날씨 결과를 초기화했습니다."),
+    getState: () => ({
+      status: state.status,
+      response: state.response,
+      responses: { ...state.responses },
+      errors: { ...state.errors },
+      error: state.error,
+      startDate: state.startDate,
+      endDate: state.endDate,
+    }),
+    getForDate: (value) =>
+      state.responses.destination?.forecast?.find((day) => day.date === value) || null,
+    getForLocation: (slot, value = state.startDate) =>
+      state.responses[slot]?.forecast?.find((day) => day.date === value) || null,
+  });
+
+  document.addEventListener("DOMContentLoaded", () => {
+    latestSelection = selection();
+    setDefaultDates();
+    ["weather-start-date", "weather-end-date"].forEach((id) => {
+      element(id)?.addEventListener("change", () => {
+        state.startDate = dateValue("weather-start-date");
+        state.endDate = dateValue("weather-end-date");
+        if (latestSelection.origin && latestSelection.destination && validDateRange(state.startDate, state.endDate)) {
+          void search();
+        } else {
+          clear("날짜가 변경되어 날씨를 초기화했습니다.");
+        }
+      });
+    });
+    ["accommodation-checkin", "accommodation-checkout"].forEach((id) => {
+      element(id)?.addEventListener("change", () => {
+        if (state.status === "idle" || state.status === "error") {
+          setDefaultDates();
+          if (latestSelection.origin && latestSelection.destination && validDateRange(state.startDate, state.endDate)) {
+            void search();
+          } else {
+            render();
+          }
+        }
+      });
+    });
+    element("weather-search")?.addEventListener("click", search);
+    render();
+    if (latestSelection.origin && latestSelection.destination && validDateRange(state.startDate, state.endDate)) {
+      void search();
+    }
+  });
 })();

@@ -39,3 +39,57 @@
 .kto-poi-pin--pharmacy { background: #15803d; }
 .kto-poi-pin--parking { background: #475569; }
 .kto-poi-pin--ev_charger { background: #047857; }
+
+
+/* AUTO_MAP_POI_UI
+   Facilities are rendered directly on the map.
+   Keep the DOM panel available for JS compatibility but hide it visually.
+*/
+#poi-panel {
+  display: none !important;
+}
+
+/* Remove any remaining legacy setup/banner headings. */
+.trip-panel > .panel-heading,
+.app-header {
+  display: none !important;
+}
+
+
+/* POI_VISIBILITY_V2 */
+
+.kto-poi-pin {
+  width: 38px !important;
+  height: 38px !important;
+
+  border: 3px solid #fff !important;
+  border-radius: 50% !important;
+
+  font-size: 0.78rem !important;
+  font-weight: 900 !important;
+  line-height: 1 !important;
+
+  box-shadow:
+    0 0 0 2px rgba(15, 23, 42, 0.55),
+    0 5px 14px rgba(15, 23, 42, 0.45) !important;
+
+  cursor: pointer;
+  user-select: none;
+}
+
+/* 특히 위험/의료 계열은 조금 더 강하게 표시 */
+.kto-poi-pin--hospital,
+.kto-poi-pin--emergency {
+  width: 42px !important;
+  height: 42px !important;
+}
+
+.kto-poi-pin:hover {
+  transform: scale(1.18);
+  z-index: 50;
+}
+
+/* 기존 주변 편의시설 패널은 지도 자동표시로 대체 */
+#poi-panel {
+  display: none !important;
+}

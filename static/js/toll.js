@@ -268,7 +268,10 @@
         window.KoreaTripTollMarkers.setTollGates(state.result.detected_toll_gates || []);
       }
       if (state.status === "partial") {
-        setStatus(`${failureMessage(state.result)} 확인 불가 구간을 0원으로 계산하지 않았습니다.`, "error");
+        setStatus(
+          "통행료를 확정하지 못했습니다. 확인 가능한 정보만 표시합니다.",
+          "active"
+        );
       } else if (state.result.source_status === "stale") {
         setStatus("공식 조회에 실패하여 마지막 확인된 캐시를 표시합니다.", "active");
       } else {
@@ -304,12 +307,19 @@
   }
 
   function handleRouteChanged(event) {
-    state.route = event && event.detail ? event.detail.route : null;
-    clearResult(state.route ? "새 경로의 통행료를 다시 확인하세요." : "경로가 없어 통행료 결과를 초기화했습니다.");
+    const nextRoute = event && event.detail ? event.detail.route : null;
+    clearResult(
+      nextRoute
+        ? "새 경로의 통행료를 자동으로 확인합니다."
+        : "경로가 없어 통행료 결과를 초기화했습니다."
+    );
     // Store the current route after clearResult; this reference is used by the
     // request race guard and is never read from the DOM.
-    state.route = event && event.detail ? event.detail.route : null;
+    state.route = nextRoute;
     render();
+    if (state.route && latestSelection.origin && latestSelection.destination) {
+      void calculateToll();
+    }
   }
 
   function handleSelectionChanged(event) {
@@ -319,8 +329,7 @@
     const changed = selectionFingerprint(nextSelection) !== selectionFingerprint(latestSelection);
     latestSelection = nextSelection;
     if (changed && (state.result || state.status === "loading")) {
-      clearResult("출발지 또는 목적지가 변경되어 통행료를 다시 확인하세요.");
-      return;
+      clearResult("출발지 또는 목적지가 변경되어 통행료 결과를 초기화했습니다.");
     }
     if (!latestSelection.origin || !latestSelection.destination) {
       clearResult("출발지와 목적지가 모두 필요합니다.");
@@ -331,9 +340,12 @@
 
   function handleVehicleChanged() {
     if (state.result || state.status === "loading") {
-      clearResult("차종이 변경되어 통행료를 다시 확인하세요.");
+      clearResult("차종이 변경되어 통행료를 자동으로 다시 확인합니다.");
     } else {
       render();
+    }
+    if (state.route && latestSelection.origin && latestSelection.destination) {
+      void calculateToll();
     }
   }
 
@@ -355,7 +367,10 @@
       window.KoreaTripTollMarkers.setTollGates(toll.detected_toll_gates || []);
     }
     if (state.status === "partial") {
-      setStatus(`${failureMessage(toll)} 확인 불가 구간을 0원으로 계산하지 않았습니다.`, "error");
+      setStatus(
+        "통행료를 확정하지 못했습니다. 확인 가능한 정보만 표시합니다.",
+        "active"
+      );
     } else {
       setStatus("공식 요금 확인 완료", "success");
     }

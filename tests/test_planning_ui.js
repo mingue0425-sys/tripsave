@@ -35,3 +35,56 @@ test("weather API preserves unknown state before a forecast is loaded", () => {
   assert.equal(weather.getState().response, null);
   assert.equal(weather.getForDate("2026-10-03"), null);
 });
+
+test("planning UI keeps all facility categories enabled by default", () => {
+  const template = fs.readFileSync(
+    path.join(__dirname, "..", "templates", "components", "poi.html"),
+    "utf8",
+  );
+  for (const category of [
+    "hospital",
+    "emergency",
+    "convenience_store",
+    "port",
+    "passenger_terminal",
+    "fuel_station",
+    "pharmacy",
+    "parking",
+    "ev_charger",
+  ]) {
+    assert.match(
+      template,
+      new RegExp(`id="poi-category-${category}"[^>]*checked`),
+    );
+  }
+});
+
+test("trip setup banner is removed without removing location controls", () => {
+  const template = fs.readFileSync(
+    path.join(__dirname, "..", "templates", "index.html"),
+    "utf8",
+  );
+  assert.doesNotMatch(template, /TRIP SETUP/);
+  assert.doesNotMatch(template, /id="trip-panel-title"/);
+  assert.match(template, /id="origin-card"/);
+  assert.match(template, /id="destination-card"/);
+});
+
+test("route, toll, and POI modules contain automatic refresh hooks", () => {
+  const routeSource = fs.readFileSync(
+    path.join(__dirname, "..", "static", "js", "route.js"),
+    "utf8",
+  );
+  const tollSource = fs.readFileSync(
+    path.join(__dirname, "..", "static", "js", "toll.js"),
+    "utf8",
+  );
+  const poiSource = fs.readFileSync(
+    path.join(__dirname, "..", "static", "js", "poi.js"),
+    "utf8",
+  );
+  assert.match(routeSource, /void calculateRoute\(\);/);
+  assert.match(tollSource, /void calculateToll\(\);/);
+  assert.match(poiSource, /function scheduleSearch\(/);
+  assert.match(poiSource, /void search\(\);/);
+});

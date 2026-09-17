@@ -803,46 +803,91 @@ class TollCalculator:
     def _entry_exit_candidates(
         analysis, *, max_attempts: int = 8
     ) -> list[tuple[MatchedTollGate, MatchedTollGate]]:
-        """Return route-progress pairs for official directional validation.
+        """Return distinct route-progress pairs for official validation.
 
-        The first spatially named gate is not necessarily a usable entry for
-        the travel direction: a route can pass an exit-only toll facility or
-        a nearby branch before reaching its actual entry station.  Keep the
-        exit candidates in reverse route order and advance the entry candidate
-        only after the official station/path check rejects the prior pair.
-        This is still one official journey lookup, never a sum of candidates.
+        Repeated logical gate names may occur because of parallel carriageways,
+        ramps, or duplicated OSM context. They must not make the entire route
+        immediately ambiguous. Instead, generate distinct directional
+        entry/exit pairs and let the official station lookup plus route-distance
+        consistency checks validate the final pair.
         """
 
         ordered = sorted(
             analysis.gates,
-            key=lambda match: (match.position_along_route_m, match.distance_to_route_m),
+            key=lambda match: (
+                match.position_along_route_m,
+                match.distance_to_route_m,
+            ),
         )
+
         named = [
             match
             for match in ordered
             if match.gate.name and match.gate.name.strip()
         ]
+
         if len(named) < 2:
             return []
-        normalized_names = [normalize_toll_name(match.gate.name) for match in named]
+
+        normalized_names = [
+            normalize_toll_name(match.gate.name)
+            for match in named
+        ]
+
         if any(not value for value in normalized_names):
             return []
-        if len(set(normalized_names)) != len(normalized_names):
-            return []
+
         explicit_operators = {
             match.gate.operator.strip().casefold()
             for match in named
-            if match.gate.operator and match.gate.operator.strip()
+            if match.gate.operator
+            and match.gate.operator.strip()
         }
-        if len(explicit_operators) > 1 and not analysis.toll_road_detected:
+
+        if (
+            len(explicit_operators) > 1
+            and not analysis.toll_road_detected
+        ):
             return []
 
-        pairs: list[tuple[MatchedTollGate, MatchedTollGate]] = []
+        pairs: list[
+            tuple[MatchedTollGate, MatchedTollGate]
+        ] = []
+
+        seen_pairs: set[tuple[str, str]] = set()
+
+        # Prefer the furthest-progress exit first, then advance possible
+        # entry points. The official source and distance sanity check remain
+        # responsible for accepting a pair.
         for exit_index in range(len(named) - 1, 0, -1):
             for entry_index in range(exit_index):
-                pairs.append((named[entry_index], named[exit_index]))
+                entry_identity = normalized_names[entry_index]
+                exit_identity = normalized_names[exit_index]
+
+                # Same station cannot be both entry and exit.
+                if entry_identity == exit_identity:
+                    continue
+
+                identity = (
+                    entry_identity,
+                    exit_identity,
+                )
+
+                if identity in seen_pairs:
+                    continue
+
+                seen_pairs.add(identity)
+
+                pairs.append(
+                    (
+                        named[entry_index],
+                        named[exit_index],
+                    )
+                )
+
                 if len(pairs) >= max_attempts:
                     return pairs
+
         return pairs
 
     @staticmethod

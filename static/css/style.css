@@ -869,6 +869,22 @@ h1 {
   background: #7c3aed;
 }
 
+.legend-weather {
+  align-items: center;
+  display: inline-flex;
+  font-size: .95rem;
+  font-style: normal;
+  font-weight: 800;
+  height: 14px;
+  justify-content: center;
+  line-height: 1;
+  width: 14px;
+}
+
+.legend-weather--clear { color: #d97706; }
+.legend-weather--cloudy { color: #64748b; }
+.legend-weather--rain { color: #0284c7; }
+
 .coordinate-bar {
   align-items: center;
   background: var(--surface);
@@ -1016,4 +1032,77 @@ h1 {
     gap: 6px;
     left: 10px;
   }
+}
+
+
+/* COMPACT_ROUTE_TOLL_UI_V2 */
+
+/* ---------------------------------------------------------
+   Legacy / setup banners
+   --------------------------------------------------------- */
+
+.app-header,
+.trip-panel > .panel-heading {
+  display: none !important;
+}
+
+
+/* ---------------------------------------------------------
+   Driving route
+
+   Keep only:
+   - 거리
+   - 예상 시간
+   --------------------------------------------------------- */
+
+.route-panel > .route-panel-heading,
+.route-panel > #route-summary,
+.route-panel > #route-calculate,
+.route-panel > #route-status {
+  display: none !important;
+}
+
+.route-panel > #route-metrics {
+  margin-top: 0 !important;
+}
+
+
+/* ---------------------------------------------------------
+   Official toll check
+
+   Keep only:
+   - 예상 통행료
+   - 조회 차종
+   - 출발 영업소
+   - 도착 영업소
+   - 확인 시각
+   --------------------------------------------------------- */
+
+.toll-panel > .toll-panel-heading,
+.toll-panel > #toll-summary,
+.toll-panel > #toll-calculate,
+.toll-panel > #toll-status,
+.toll-panel > #toll-debug-panel,
+.toll-panel #toll-gates-count {
+  display: none !important;
+}
+
+.toll-panel > #toll-metrics {
+  margin-top: 0 !important;
+}
+
+
+/* 값 자체가 중심이 되도록 */
+#route-distance,
+#route-duration,
+#toll-total {
+  font-weight: 800;
+  font-size: 1.05rem;
+}
+
+
+/* 기존 TRIP SETUP 등이 남아 있어도 강제 제거 */
+.trip-panel-title,
+#trip-panel-title {
+  display: none !important;
 }

@@ -1,4 +1,5 @@
 .weather-panel { margin-top: 1rem; padding: 1rem; border: 1px solid rgba(45,55,72,.12); border-radius: 1rem; background: rgba(255,255,255,.82); }
+.weather-panel--legacy { display: none !important; }
 .weather-panel__heading h2 { margin: .2rem 0 0; }
 .weather-summary, .weather-status { margin: .6rem 0; color: #5b6472; font-size: .82rem; line-height: 1.5; }
 .weather-status--error { color: #b42318; }
@@ -20,3 +21,184 @@
 .weather-day__values--missing { color: #9a6700; }
 .weather-day__values--stale { color: #9a6700; }
 .weather-day--stale { border-color: #f59e0b; }
+
+/* Weather is a map signal. Keep each marker small enough to leave roads and
+   labels readable while giving the icon a stable, high-contrast surface. */
+.weather-map-marker {
+  align-items: center;
+  background: rgb(255 255 255 / 94%);
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  box-shadow: 0 3px 9px rgb(15 23 42 / 28%);
+  color: #173042;
+  cursor: pointer;
+  display: inline-flex;
+  gap: 4px;
+  justify-content: center;
+  min-height: 36px;
+  min-width: 42px;
+  padding: 4px 7px 4px 5px;
+  pointer-events: auto;
+  position: relative;
+  user-select: none;
+  z-index: 4;
+}
+
+.weather-map-marker:hover,
+.weather-map-marker:focus-visible {
+  box-shadow: 0 4px 12px rgb(15 23 42 / 38%);
+  outline: 2px solid #0f766e;
+  outline-offset: 2px;
+}
+
+.weather-map-marker--stale {
+  border-color: #f59e0b;
+}
+
+.weather-map-marker--error,
+.weather-map-marker--unknown {
+  color: #64748b;
+}
+
+.weather-map-marker__visual {
+  display: block;
+  height: 25px;
+  position: relative;
+  width: 27px;
+}
+
+.weather-temperature {
+  font-size: .73rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.weather-sun {
+  background: #fbbf24;
+  border: 2px solid #f59e0b;
+  border-radius: 50%;
+  box-shadow: 0 0 0 4px rgb(251 191 36 / 17%), 0 0 10px rgb(251 191 36 / 60%);
+  height: 13px;
+  left: 5px;
+  position: absolute;
+  top: 5px;
+  width: 13px;
+}
+
+.weather-sun::before {
+  border: 2px dotted #f59e0b;
+  border-radius: 50%;
+  content: "";
+  inset: -6px;
+  position: absolute;
+}
+
+.weather-cloud {
+  background: #94a3b8;
+  border-radius: 999px;
+  bottom: 5px;
+  height: 10px;
+  left: 2px;
+  position: absolute;
+  width: 24px;
+}
+
+.weather-cloud::before,
+.weather-cloud::after {
+  background: #cbd5e1;
+  border-radius: 50%;
+  content: "";
+  position: absolute;
+}
+
+.weather-cloud::before {
+  height: 14px;
+  left: 4px;
+  top: -8px;
+  width: 14px;
+}
+
+.weather-cloud::after {
+  height: 11px;
+  right: 2px;
+  top: -5px;
+  width: 11px;
+}
+
+.weather-rain,
+.weather-snow {
+  height: 16px;
+  left: 0;
+  position: absolute;
+  top: 10px;
+  width: 27px;
+}
+
+.weather-rain i {
+  animation: weather-rain-drop 1.7s linear infinite;
+  background: #218bd0;
+  border-radius: 999px;
+  height: 7px;
+  position: absolute;
+  transform: rotate(18deg);
+  width: 2px;
+}
+
+.weather-rain i:nth-child(1) { left: 5px; animation-delay: -.15s; }
+.weather-rain i:nth-child(2) { left: 11px; animation-delay: -.75s; }
+.weather-rain i:nth-child(3) { left: 17px; animation-delay: -1.2s; }
+.weather-rain i:nth-child(4) { left: 22px; animation-delay: -.45s; }
+
+.weather-snow i {
+  animation: weather-snow-fall 2.8s ease-in-out infinite;
+  background: #60a5fa;
+  border-radius: 50%;
+  height: 4px;
+  position: absolute;
+  width: 4px;
+}
+
+.weather-snow i:nth-child(1) { left: 5px; animation-delay: -.2s; }
+.weather-snow i:nth-child(2) { left: 11px; animation-delay: -1.4s; }
+.weather-snow i:nth-child(3) { left: 17px; animation-delay: -.9s; }
+.weather-snow i:nth-child(4) { left: 22px; animation-delay: -2s; }
+
+.weather-unknown {
+  align-items: center;
+  background: #e2e8f0;
+  border: 2px solid #94a3b8;
+  border-radius: 50%;
+  display: flex;
+  font-size: 1rem;
+  font-weight: 900;
+  height: 20px;
+  justify-content: center;
+  left: 2px;
+  position: absolute;
+  top: 2px;
+  width: 20px;
+}
+
+@keyframes weather-rain-drop {
+  0% { opacity: 0; transform: translateY(-3px) rotate(18deg); }
+  20% { opacity: .9; }
+  78% { opacity: .9; }
+  100% { opacity: 0; transform: translateY(9px) rotate(18deg); }
+}
+
+@keyframes weather-snow-fall {
+  0% { opacity: 0; transform: translateY(-2px); }
+  25% { opacity: .85; }
+  80% { opacity: .85; }
+  100% { opacity: 0; transform: translateY(8px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .weather-map-marker,
+  .weather-map-marker * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

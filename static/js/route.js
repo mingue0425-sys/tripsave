@@ -201,10 +201,23 @@
         throw new Error(errorMessage(payload));
       }
       if (
-        !window.KoreaTripRouteLayer ||
-        !window.KoreaTripRouteLayer.setRouteGeometry(payload.route.geometry)
+        window.KoreaTripRouteLayer &&
+        typeof window.KoreaTripRouteLayer.setRouteGeometry === "function"
       ) {
-        throw new Error("경로 geometry를 지도에 표시하지 못했습니다.");
+        const accepted = window.KoreaTripRouteLayer.setRouteGeometry(
+          payload.route.geometry
+        );
+        if (!accepted) {
+          console.warn(
+            "경로 geometry를 지도 레이어가 받아들이지 못했습니다. " +
+            "경로 데이터는 유지합니다."
+          );
+        }
+      } else {
+        console.warn(
+          "경로 지도 레이어를 사용할 수 없습니다. " +
+          "경로 데이터는 유지합니다."
+        );
       }
       routeState.route = payload.route;
       routeState.status = "success";
@@ -251,9 +264,14 @@
     selectionRevision += 1;
     if (nextFingerprint !== previousFingerprint) {
       if (routeState.route || routeState.status === "loading") {
-        invalidateRoute("출발지 또는 목적지가 변경되어 경로를 다시 계산하세요.");
-        return;
+        invalidateRoute("출발지 또는 목적지가 변경되어 경로를 자동으로 다시 계산합니다.");
+      } else {
+        render();
       }
+      if (mapReady && latestSelection.origin && latestSelection.destination) {
+        void calculateRoute();
+      }
+      return;
     }
     render();
   }
@@ -262,6 +280,14 @@
   window.addEventListener("kto:map-ready", () => {
     mapReady = true;
     render();
+    if (
+      latestSelection.origin &&
+      latestSelection.destination &&
+      !routeState.route &&
+      routeState.status !== "loading"
+    ) {
+      void calculateRoute();
+    }
   });
   window.addEventListener("kto:map-error", () => {
     mapReady = false;

@@ -6,6 +6,7 @@
   const SOURCE_ID = "kto-route-source";
   const LAYER_ID = "kto-route-layer";
   let routeGeometry = null;
+  let drawRetryScheduled = false;
 
   function isValidCoordinate(coordinate) {
     return (
@@ -52,86 +53,184 @@
     return true;
   }
 
-  function setRouteGeometry(geometry) {
-    if (!isValidGeometry(geometry)) {
-      return false;
-    }
+  function scheduleStoredRouteDraw() {
     const map = getMap();
-    if (!map || !map.isStyleLoaded() || !window.maplibregl) {
+
+    if (
+      !map ||
+      drawRetryScheduled ||
+      typeof map.once !== "function"
+    ) {
       return false;
     }
+
+    drawRetryScheduled = true;
+
+    map.once("idle", () => {
+      drawRetryScheduled = false;
+      drawStoredRoute();
+    });
+
+    return true;
+  }
+
+  function drawStoredRoute() {
+    if (!routeGeometry) {
+      return false;
+    }
+
+    const map = getMap();
+
+    if (!map || !window.maplibregl) {
+      return false;
+    }
+
+    if (!map.isStyleLoaded()) {
+      scheduleStoredRouteDraw();
+      return false;
+    }
+
     const feature = {
       type: "Feature",
       properties: {},
       geometry: {
         type: "LineString",
-        coordinates: geometry.coordinates.map((coordinate) => coordinate.slice()),
+        coordinates: routeGeometry.coordinates.map(
+          (coordinate) => coordinate.slice()
+        ),
       },
     };
-    const source = map.getSource(SOURCE_ID);
-    if (source && typeof source.setData === "function") {
-      source.setData(feature);
-    } else {
-      map.addSource(SOURCE_ID, {
-        type: "geojson",
-        data: feature,
-      });
-      map.addLayer({
-        id: LAYER_ID,
-        type: "line",
-        source: SOURCE_ID,
-        layout: {
-          "line-cap": "round",
-          "line-join": "round",
-        },
-        paint: {
-          "line-color": "#e14d3d",
-          "line-width": [
-            "interpolate",
-            ["linear"],
-            ["zoom"],
-            5,
-            2.5,
-            10,
-            4,
-            16,
-            7,
-          ],
-          "line-opacity": 0.9,
-        },
-      });
+
+    try {
+      const source = map.getSource(SOURCE_ID);
+
+      if (source && typeof source.setData === "function") {
+        source.setData(feature);
+      } else {
+        map.addSource(SOURCE_ID, {
+          type: "geojson",
+          data: feature,
+        });
+      }
+
+      if (!map.getLayer(LAYER_ID)) {
+        map.addLayer({
+          id: LAYER_ID,
+          type: "line",
+          source: SOURCE_ID,
+          layout: {
+            "line-cap": "round",
+            "line-join": "round",
+          },
+          paint: {
+            "line-color": "#e14d3d",
+            "line-width": [
+              "interpolate",
+              ["linear"],
+              ["zoom"],
+              5,
+              2.5,
+              10,
+              4,
+              16,
+              7,
+            ],
+            "line-opacity": 0.9,
+          },
+        });
+      }
+
+      return true;
+    } catch (error) {
+      console.warn(
+        "경로 선 렌더링을 재시도합니다.",
+        error
+      );
+      scheduleStoredRouteDraw();
+      return false;
     }
-    routeGeometry = feature.geometry;
+  }
+
+  function setRouteGeometry(geometry) {
+    if (!isValidGeometry(geometry)) {
+      return false;
+    }
+
+    routeGeometry = {
+      type: "LineString",
+      coordinates: geometry.coordinates.map(
+        (coordinate) => coordinate.slice()
+      ),
+    };
+
+    // Rendering is best-effort. A temporary MapLibre/style state must never
+    // invalidate an already successful OSRM route.
+    drawStoredRoute();
+
     return true;
   }
 
   function clearRoute() {
     routeGeometry = null;
-    return removeMapRoute();
+    drawRetryScheduled = false;
+
+    const removed = removeMapRoute();
+
+    if (!removed) {
+      const map = getMap();
+
+      if (map && typeof map.once === "function") {
+        map.once("idle", removeMapRoute);
+      }
+    }
+
+    return removed;
   }
 
   function fitRouteBounds() {
     const map = getMap();
+
     if (
       !map ||
-      !map.isStyleLoaded() ||
       !routeGeometry ||
-      !routeGeometry.coordinates.length
+      !routeGeometry.coordinates.length ||
+      !window.maplibregl
     ) {
       return false;
     }
+
     const bounds = new maplibregl.LngLatBounds();
-    routeGeometry.coordinates.forEach((coordinate) => bounds.extend(coordinate));
+
+    routeGeometry.coordinates.forEach(
+      (coordinate) => bounds.extend(coordinate)
+    );
+
     if (bounds.isEmpty()) {
       return false;
     }
+
     map.fitBounds(bounds, {
-      padding: { top: 90, right: 90, bottom: 90, left: 90 },
+      padding: {
+        top: 90,
+        right: 90,
+        bottom: 90,
+        left: 90,
+      },
       maxZoom: 12,
       duration: 650,
     });
+
     return true;
   }
+
+  window.addEventListener("kto:map-ready", () => {
+    if (!routeGeometry) {
+      return;
+    }
+
+    drawStoredRoute();
+    fitRouteBounds();
+  });
 
   window.KoreaTripRouteLayer = Object.freeze({
     SOURCE_ID,

@@ -15,8 +15,8 @@
     pharmacy: "약국", parking: "주차장", ev_charger: "EV 충전소",
   });
   const LETTERS = Object.freeze({
-    hospital: "H", emergency: "E", convenience_store: "C", port: "P",
-    passenger_terminal: "PT", fuel_station: "F", pharmacy: "Rx", parking: "P", ev_charger: "EV",
+    hospital: "병", emergency: "응", convenience_store: "편", port: "항",
+    passenger_terminal: "여", fuel_station: "주", pharmacy: "약", parking: "P", ev_charger: "EV",
   });
   const state = {
     status: "idle",
@@ -28,6 +28,7 @@
     visible: Object.fromEntries(CATEGORIES.map((category) => [category, true])),
   };
   let activeController = null;
+  let autoSearchTimer = null;
   let latestDestination = null;
   let latestRoute = null;
   let mapInstance = null;
@@ -42,12 +43,39 @@
     if (!value) return "none";
     return JSON.stringify(value);
   }
-  function selectedCategories() {
-    return CATEGORIES.filter((category) => {
-      const checkbox = element(`poi-category-${category}`);
-      return checkbox && checkbox.checked;
-    });
+  let poiMapListenersBound = false;
+
+  function ensureMapInstance() {
+    if (
+      !mapInstance &&
+      window.KoreaTripMap &&
+      typeof window.KoreaTripMap.getMap === "function"
+    ) {
+      mapInstance = window.KoreaTripMap.getMap();
+    }
+
+    if (
+      mapInstance &&
+      !poiMapListenersBound &&
+      typeof mapInstance.on === "function"
+    ) {
+      poiMapListenersBound = true;
+
+      mapInstance.on("zoomend", renderMarkers);
+
+      // MapLibre can temporarily report an unfinished style while route
+      // layers are changing. Re-render pins once the map becomes idle.
+      mapInstance.on("idle", renderMarkers);
+    }
+
+    return mapInstance;
   }
+
+  function selectedCategories() {
+    // Automatic map mode always uses all supported facility categories.
+    return CATEGORIES.slice();
+  }
+
   function validCoordinates(item) {
     return item && Number.isFinite(item.lat) && Number.isFinite(item.lng)
       && item.lat >= -90 && item.lat <= 90 && item.lng >= -180 && item.lng <= 180;
@@ -89,7 +117,7 @@
   function markerLimit() {
     if (!mapInstance || typeof mapInstance.getZoom !== "function") return 50;
     const zoom = mapInstance.getZoom();
-    return zoom < 10 ? 3 : zoom < 13 ? 15 : 50;
+    return zoom < 10 ? 6 : zoom < 13 ? 20 : 50;
   }
   function clearMarkers(category) {
     markersByCategory[category].forEach((marker) => marker.remove());
@@ -97,7 +125,16 @@
   }
   function renderCategory(category) {
     clearMarkers(category);
-    if (!mapInstance || !window.maplibregl || !state.visible[category]) return;
+
+    const map = ensureMapInstance();
+
+    if (
+      !map ||
+      !window.maplibregl ||
+      !state.visible[category]
+    ) {
+      return;
+    }
     const items = state.resultsByCategory[category]
       .filter(validCoordinates)
       .slice()
@@ -109,7 +146,7 @@
       .slice(0, markerLimit());
     items.forEach((item) => {
       const marker = new maplibregl.Marker({ anchor: "bottom", element: createMarkerElement(category, item) })
-        .setLngLat([item.lng, item.lat]).addTo(mapInstance);
+        .setLngLat([item.lng, item.lat]).addTo(map);
       if (typeof maplibregl.Popup === "function") marker.setPopup(new maplibregl.Popup({ offset: 20 }).setText(popupText(item)));
       markersByCategory[category].push(marker);
     });
@@ -173,6 +210,10 @@
   }
   function clear(message) {
     state.requestId += 1;
+    if (autoSearchTimer !== null) {
+      clearTimeout(autoSearchTimer);
+      autoSearchTimer = null;
+    }
     if (activeController) activeController.abort();
     activeController = null;
     state.status = "idle";
@@ -190,16 +231,33 @@
     if (!destination || !categories.length) return null;
     return {
       destination: { lat: destination.lat, lng: destination.lng, label: destination.name || destination.label || "destination", source: "selection" },
-      route: latestRoute || null,
+      route: null,
       categories,
       destination_radius_m: 3000,
       route_corridor_m: 1000,
-      limit_per_category: 50,
+      limit_per_category: 20,
     };
   }
   function isCurrent(requestId, requestKey) {
     return requestId === state.requestId && requestKey === fingerprint({ destination: latestDestination || currentDestination(), route: latestRoute, categories: selectedCategories() });
   }
+  function scheduleSearch(delayMs = 20) {
+    if (autoSearchTimer !== null) {
+      clearTimeout(autoSearchTimer);
+    }
+
+    autoSearchTimer = null;
+
+    if (!latestDestination || !selectedCategories().length) {
+      return;
+    }
+
+    autoSearchTimer = setTimeout(() => {
+      autoSearchTimer = null;
+      void search();
+    }, delayMs);
+  }
+
   async function search() {
     const request = buildRequest();
     if (!request) { setStatus("목적지와 시설 종류를 선택해 주세요.", "error"); return false; }
@@ -218,6 +276,11 @@
       request.categories.forEach((category) => { state.resultsByCategory[category] = payload.results.filter((item) => item && item.category === category); });
       state.response = payload; state.status = payload.complete ? "success" : "partial"; render(); renderMarkers();
       setStatus(payload.complete ? "주변 시설을 확인했습니다." : "일부 시설 데이터는 확인할 수 없습니다.", payload.complete ? "success" : "partial");
+
+      requestAnimationFrame(() => {
+        renderMarkers();
+      });
+
       return true;
     } catch (error) {
       if (error && error.name === "AbortError") return false;
@@ -230,16 +293,45 @@
     }
   }
   function handleSelectionChanged(event) {
-    const destination = event && event.detail ? event.detail.destination || null : currentDestination();
-    const changed = fingerprint(destination) !== fingerprint(latestDestination);
+    const destination =
+      event && event.detail
+        ? event.detail.destination || null
+        : currentDestination();
+
+    const changed =
+      fingerprint(destination) !== fingerprint(latestDestination);
+
     latestDestination = destination;
-    if (changed && (state.response || state.status === "loading")) clear("목적지가 변경되어 주변 시설을 초기화했습니다.");
-    else render();
+
+    if (changed) {
+      clear(
+        latestDestination
+          ? "목적지가 변경되어 주변 시설을 자동으로 다시 확인합니다."
+          : "목적지가 없어 주변 시설을 초기화했습니다."
+      );
+
+      if (latestDestination) {
+        scheduleSearch();
+      }
+
+      return;
+    }
+
+    render();
   }
+
   function handleRouteChanged(event) {
-    latestRoute = event && event.detail ? event.detail.route || null : null;
-    if (state.response || state.status === "loading") clear("경로가 변경되어 경로 주변 시설을 초기화했습니다.");
+    latestRoute =
+      event && event.detail
+        ? event.detail.route || null
+        : null;
+
+    // POI 자동 조회는 목적지 주변 검색만 수행한다.
+    // 경로가 계산될 때마다 서울-부산 같은 긴 route geometry를
+    // 다시 검색하지 않는다.
+    render();
   }
+
   window.addEventListener("kto:selection-changed", handleSelectionChanged);
   window.addEventListener("kto:route-changed", handleRouteChanged);
   window.addEventListener("kto:map-ready", (event) => {
@@ -254,6 +346,8 @@
     formatStatus: statusLabel,
   });
   document.addEventListener("DOMContentLoaded", () => {
+    ensureMapInstance();
+
     latestDestination = currentDestination();
     CATEGORIES.forEach((category) => {
       const checkbox = element(`poi-category-${category}`);

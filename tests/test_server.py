@@ -29,11 +29,13 @@ def test_root_renders_open_basemap_shell() -> None:
     assert "/static/js/poi.js" in response.text
     assert "/static/js/itinerary.js" in response.text
     assert "/static/js/weather.js" in response.text
+    assert "/static/js/weather_layer.js" in response.text
     assert "trip-candidates-panel" in response.text
     assert "recommendations-panel" in response.text
     assert "poi-panel" in response.text
     assert "itinerary-panel" in response.text
     assert "weather-panel" in response.text
+    assert "weather-panel--legacy" in response.text
     assert "/api/routes" in response.text
     assert "/api/tolls/calculate" in response.text
     assert "/api/fuel/calculate" in response.text

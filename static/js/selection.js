@@ -248,21 +248,43 @@
   }
 
   function handleMapClick(location) {
-    if (state.selectionMode === SelectionMode.NONE) {
-      return false;
-    }
     if (!location || typeof location !== "object") {
       setStatus("클릭한 좌표가 유효하지 않습니다.", "error");
       return false;
     }
+
     const normalized = makeMapLocation(location.lat, location.lng);
     if (!normalized) {
       setStatus("클릭한 좌표가 유효하지 않습니다.", "error");
       return false;
     }
-    return state.selectionMode === SelectionMode.ORIGIN
-      ? setOrigin(normalized)
-      : setDestination(normalized);
+
+    // Explicit selection mode always wins.
+    if (state.selectionMode === SelectionMode.ORIGIN) {
+      return setOrigin(normalized);
+    }
+    if (state.selectionMode === SelectionMode.DESTINATION) {
+      return setDestination(normalized);
+    }
+
+    // Zero-click setup UX:
+    // first ordinary map click = origin
+    // second ordinary map click = destination
+    if (!state.origin) {
+      return setOrigin(normalized);
+    }
+
+    if (!state.destination) {
+      return setDestination(normalized);
+    }
+
+    // Both slots are already populated. Avoid accidentally replacing a
+    // location while the user is panning/clicking around the map.
+    setStatus(
+      "출발지와 목적지가 이미 설정되어 있습니다. 변경하려면 해당 위치의 변경 버튼을 사용하세요.",
+      "active"
+    );
+    return false;
   }
 
   function removeLocation(slot) {
