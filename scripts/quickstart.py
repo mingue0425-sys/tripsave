@@ -3,7 +3,8 @@
 The default path is intentionally lightweight: it reuses or creates the
 project virtual environment, installs only when runtime imports are missing,
 checks the Playwright browser, initializes the weather cache, verifies the
-FastAPI health endpoint, and then starts Uvicorn.
+FastAPI health endpoint, starts Uvicorn, waits for it to become ready, and
+opens the local web app in the default browser.
 
 South Korea OSRM data is prepared automatically when it is missing. Existing
 PBF/MLD files are reused without repeating the expensive work. The routing
@@ -14,14 +15,18 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import importlib.util
 import os
 import signal
 import subprocess
 import sys
 import time
+import webbrowser
 import venv
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -265,7 +270,61 @@ def verify_fastapi(*, expect_routing: bool) -> None:
         print(f"[pass] local OSRM API: {routing_response.json()}")
 
 
-def run_server(*, host: str, port: int, reload: bool) -> int:
+def local_app_host(host: str) -> str:
+    """Return a loopback host suitable for local health checks and browsers."""
+    return "127.0.0.1" if host in {"", "0.0.0.0", "::"} else host
+
+
+def app_url(*, host: str, port: int) -> str:
+    browser_host = local_app_host(host)
+    if ":" in browser_host and not browser_host.startswith("["):
+        browser_host = f"[{browser_host}]"
+    return f"http://{browser_host}:{port}"
+
+
+def app_health_ready(url: str) -> bool:
+    try:
+        with urlopen(f"{url}/health", timeout=1) as response:
+            if response.status != 200:
+                return False
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, URLError, json.JSONDecodeError):
+        return False
+    return payload.get("status") == "ok"
+
+
+def wait_for_app(process: subprocess.Popen[bytes], url: str, *, timeout_s: float = 45) -> None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise QuickstartError(
+                f"TripSave server exited during startup with code {process.returncode}"
+            )
+        if app_health_ready(url):
+            return
+        time.sleep(0.25)
+    raise QuickstartError(f"TripSave did not become ready within {timeout_s:g} seconds")
+
+
+def stop_app_process(process: subprocess.Popen[bytes] | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    try:
+        if os.name == "nt" and hasattr(signal, "CTRL_BREAK_EVENT"):
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            process.send_signal(signal.SIGINT)
+        process.wait(timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+
+def run_server(*, host: str, port: int, reload: bool, open_browser: bool) -> int:
     command = [
         sys.executable,
         "-m",
@@ -281,7 +340,25 @@ def run_server(*, host: str, port: int, reload: bool) -> int:
     print("[run] " + " ".join(command))
     environment = os.environ.copy()
     environment.setdefault("KTO_TOLL_BROWSER_WARMUP", "0")
-    return subprocess.run(command, cwd=PROJECT_ROOT, env=environment, check=False).returncode
+    process = subprocess.Popen(command, cwd=PROJECT_ROOT, env=environment)
+    url = app_url(host=host, port=port)
+    try:
+        wait_for_app(process, url)
+        print(f"[ready] TripSave: {url}")
+        if open_browser:
+            try:
+                opened = webbrowser.open(url, new=2)
+            except Exception as error:  # noqa: BLE001 - browser is optional
+                print(f"[info] Could not open the browser automatically: {error}")
+            else:
+                message = "[open] Browser launched" if opened else "[info] Open this URL in a browser"
+                print(f"{message}: {url}")
+        return process.wait()
+    except KeyboardInterrupt:
+        print("\n[stop] TripSave stopped")
+        return 130
+    finally:
+        stop_app_process(process)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -304,6 +381,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="127.0.0.1", help="Uvicorn bind host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8765, help="Uvicorn port (default: 8765)")
     parser.add_argument("--reload", action="store_true", help="enable Uvicorn auto-reload")
+    parser.add_argument("--no-open", action="store_true", help="do not open the app in the default browser")
     return parser
 
 
@@ -339,9 +417,14 @@ def main(argv: list[str] | None = None) -> int:
         verify_fastapi(expect_routing=not args.skip_routing)
 
         if args.check:
-            print("[ready] TripSave is prepared. Start with: python scripts/quickstart.py")
+            print("[ready] TripSave is prepared. Start with: python start.py")
             return 0
-        return run_server(host=args.host, port=args.port, reload=args.reload)
+        return run_server(
+            host=args.host,
+            port=args.port,
+            reload=args.reload,
+            open_browser=not args.no_open,
+        )
     finally:
         stop_routing_service(routing_process)
 

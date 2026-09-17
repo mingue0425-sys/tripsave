@@ -46,16 +46,17 @@ python -m playwright install chromium
 For a fast, repeatable local setup, run this from the project root:
 
 ```bash
-python3 scripts/quickstart.py
+python3 start.py
 ```
 
 The command reuses or creates `.venv`, installs dependencies only when runtime
 imports are missing, checks/installs Playwright Chromium, initializes the
 weather SQLite cache, downloads/verifies and preprocesses the South Korea OSRM
 PBF when the local graph is missing, starts local OSRM on `127.0.0.1:5000`,
-verifies `/health`, and starts TripSave on `http://127.0.0.1:8765`. Existing
-PBF/MLD files are reused, so repeated starts do not repeat the expensive work.
-Use `--check` to prepare without starting TripSave, `--skip-routing` for an
+verifies `/health`, opens the default browser, and keeps TripSave running on
+`http://127.0.0.1:8765`. Existing PBF/MLD files are reused, so repeated starts
+do not repeat the expensive work. Use `--check` to prepare without starting
+TripSave, `--no-open` to keep the browser closed, `--skip-routing` for an
 HTTP-only weather run, `--routing-engine docker` to force Docker, or
 `--force-download` to intentionally replace and rebuild the PBF graph.
 
